@@ -5,3 +5,5 @@ backend/data/*.db
 .DS_Store
 .claude/
 CLAUDE.md
+scanner/data/*.db
+scanner/data/*.db-*

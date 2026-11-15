@@ -1,12 +1,16 @@
 # Agentic Real-Time DAST — TBO Voyage Hack 4.0
 
-We are building automated security agents that watch a travel booking platform as it changes, find security holes the way a real attacker would (especially logic mistakes like one agency reading another's bookings, or paying ₹100 for a ₹25,000 trip), prove which problems are real, and report them to the right team within minutes. So far (Phase 0) we have built the practice target: a small pretend B2B travel platform, with a clickable agency portal, two agencies, test accounts, bookings, payments and refunds, and exactly five deliberately hidden security holes. It gives our future agents a controlled place to practise, where we already know the right answers. See `docs/PHASE_LOG.md` for the full plain-English story.
+We are building automated security agents that watch a travel booking platform as it changes, find security holes the way a real attacker would (especially logic mistakes like one agency reading another's bookings, or paying ₹100 for a ₹25,000 trip), prove which problems are real, and report them to the right team within minutes. So far we have built two separate things. The first is the practice target (Phase 0): a small pretend B2B travel platform, with a clickable agency portal, two agencies, test accounts, bookings, payments and refunds, and exactly five deliberately hidden security holes, so our agents have a place to practise where we already know the right answers. The second is the backbone of the scanner (Phase 1): an independent service that hears "something changed", starts a scan, walks it through a ten-stage pipeline (for now each stage is a placeholder that does no testing), records everything in its own database, and shows it live on a "Security Command Center" dashboard. See `docs/PHASE_LOG.md` for the full plain-English story.
 
 ## Project layout
 
 ```
-backend/    FastAPI mock travel platform (the target), SQLite database, traffic log
-frontend/   Next.js + Tailwind agency portal (port 3000); public/app.js is the route manifest
+backend/    THE TARGET: FastAPI mock travel platform (port 8000), SQLite database, traffic log
+frontend/   THE TARGET: Next.js + Tailwind agency portal (port 3000); public/app.js is the route manifest
+scanner/    THE SCANNER: independent service with its own venv, database and dashboard
+  service/    FastAPI API (port 9000): deploy-event intake + LangGraph orchestrator
+  scripts/    fire_event.py: send a sample deploy event
+  dashboard/  Next.js + Tailwind "Security Command Center" (port 3001)
 docs/       PHASE_LOG.md (plain-English project log), PLANTED_BUGS.md (dev-only answer key)
 ```
 
@@ -46,3 +50,35 @@ Then open **http://localhost:3000** and sign in. The portal forwards every `/api
 - Close a planted hole: start with e.g. `FIX_IDOR=true uvicorn app.main:app --port 8000` (see `docs/PLANTED_BUGS.md`)
 
 Test accounts (dev only): `a_admin`, `a_subagent`, `b_admin`, `b_subagent`. Their passwords are in `backend/seed.py`.
+
+## Run the scanner
+
+The scanner is a separate service with its own Python environment. Run these from the project root.
+
+**One-time setup**
+
+```bash
+python3 -m venv scanner/.venv
+scanner/.venv/bin/pip install -r scanner/requirements.txt
+cd scanner/dashboard && npm install
+```
+
+**Tab A: scanner API (port 9000)**
+
+```bash
+cd scanner && .venv/bin/uvicorn service.main:app --port 9000
+```
+
+**Tab B: dashboard (port 3001)**
+
+```bash
+cd scanner/dashboard && npm run dev
+```
+
+**Tab C: trigger a scan**
+
+```bash
+scanner/.venv/bin/python scanner/scripts/fire_event.py --endpoint /api/refunds --method POST --version v2
+```
+
+Open **http://localhost:3001** and watch the scan move through the pipeline. The scanner's data lives in `scanner/data/scanner.db`; delete that file to start with an empty history.

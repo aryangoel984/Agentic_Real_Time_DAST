@@ -118,3 +118,87 @@ The automatic `/docs` page was awkward to test with. You had to copy a pass code
 5. Open **Request console** and send `GET /api/v1/bookings/1002`. You get another agency's booking through the old route. That is hole #4.
 6. Untick "Send my login token" and send `GET /api/internal/partner-details`. You get confidential partner data with no login. That is hole #5.
 7. Run `python seed.py` in `backend/` to reset everything.
+
+---
+
+## Phase 1 — The scanner's backbone
+
+### What it is and why
+
+Phases 0 and 0.1 built the **target**, the pretend travel platform with five hidden holes. Phase 1 starts the **scanner**, the system that will hunt for those holes. Before it can test anything, it needs a backbone:
+
+- a way to hear "something just changed on the platform"
+- a manager that runs each scan through a fixed series of steps
+- a notebook where it records everything it does and finds
+- a screen to watch it on
+
+This phase builds that backbone. **No actual security testing happens yet.** Every step is a placeholder (a "stub") that simply says "I'm here", marks itself done, and passes the scan along. Later phases will fill in each step with real work.
+
+### The key ideas, in plain English
+
+- **Change event.** When developers release new code, their release system can send a short message such as "the refunds API was just deployed, version 2". The scanner listens for these messages. Each one starts a new scan, because a change is exactly when a new hole might appear. This matches TBO's ask to "test within minutes of a deploy".
+- **The orchestrator (the manager).** This is the part that walks a scan through ten steps, in order:
+  1. **Change detection:** what changed?
+  2. **Recon:** discover the platform's addresses.
+  3. **Inventory:** label each address as in use, zombie or shadow.
+  4. **Attack planning:** choose which tests to run.
+  5. **Safety gateway:** check scope, speed limits and approvals.
+  6. **Execution:** send the tests.
+  7. **Verification:** prove each hit is real.
+  8. **Triage:** remove duplicates and rate how serious each one is.
+  9. **Reporting:** write it up for the owner.
+  10. **Retest:** re-check after a fix.
+
+  Retest can send the scan **back** to verification ("did the fix work?"), so the pipeline has a loop, not just a straight line. It's built with **LangGraph**, a tool for wiring up step-by-step agent workflows, which later lets us put AI reasoning inside individual steps.
+- **The datastore (the notebook).** This is the scanner's own database file. Every scan gets a row, and everything the scan produces is filed under it:
+  - the change message that triggered it
+  - each step's status
+  - a running log
+  - and, in later phases: the endpoints found, the tests planned, the findings, the proof for each finding, every request sent to the target, and every re-check after a fix.
+
+  All of these tables exist now, so later phases fill in a fixed shape instead of reshaping it.
+- **The Security Command Center.** A dashboard at `localhost:3001`. On the left is a list of scans. On the right is the selected scan: what triggered it, a ten-step timeline that turns green step by step, a live activity log, and a Findings area that stays empty for now.
+
+### Why the scanner is kept separate from the target
+
+The scanner is meant to behave like an **outside auditor**. A real attacker, or TBO's real staging environment in later rounds, never gives us the platform's database or source code. We only get its web address. If our scanner peeked at the target's database, it would "find" holes it could never find in real life, and our results would be worthless.
+
+So the separation is built in, not just promised:
+
+- The scanner lives in its own folder (`scanner/`).
+- It has its **own Python environment**, its own list of dependencies, and its **own database** (`scanner/data/scanner.db`).
+- It cannot accidentally load the target's code, because that code isn't even installed where the scanner runs.
+- The dashboard talks only to the scanner, never to the target.
+- In later phases, the scanner will reach the target only the way any outsider can: over the web (HTTP), through a safety gateway that logs every request.
+
+**Separation check (done at the end of this phase):**
+
+- We searched all the scanner's code for any mention of the target's database file (`travel.db`), its folder (`backend/`), its code (`app...`), its reset script (`seed.py`), or its address (`:8000`). We found **zero matches**.
+- While the scanner was running, the only database files it had open were its own: `scanner.db` and that database's two working files.
+
+### Key decisions and why
+
+- **Progress is saved to the database after every step.** That's why a scan's progress survives a page refresh or even a scanner restart, and why anyone can inspect it. We tested both.
+  - LangGraph also offers its own "save point" system for resuming a half-finished scan after a crash. We left it out for now: it would be a second copy of the same information, and resuming isn't useful until the steps do real work.
+  - Instead, if the scanner restarts mid-scan, that scan is honestly marked **interrupted** rather than left looking as if it's still running.
+- **Each placeholder step pauses for 1.5 seconds.** Ten instant steps would finish in a blink, and you couldn't watch the pipeline move. The pause is a single setting (`STUB_STAGE_DELAY_SECONDS`), and it will be removed once the steps do real work.
+- **The dashboard checks for updates every 1.5 seconds.** The alternative is keeping a live two-way connection open ("WebSockets"), which is more complex. Checking every 1.5 seconds is simpler and plenty fast for scans that take seconds or minutes.
+- **The retest loop has a limit.** It can send a scan back to verification at most once per scan (a setting), so a stubborn finding can't make the scanner go round in circles forever. We tested the loop with a pretend finding, and it went back exactly once and then stopped.
+- **The selected scan is part of the web address** (`?scan=2`), so refreshing or sharing the link reopens the same scan.
+- **Separate ports.** The target uses 8000 and 3000. The scanner uses 9000 (API) and 3001 (dashboard).
+
+### Limitations
+
+- No real testing yet. Every step is a placeholder, and the Findings area is always empty.
+- The scanner doesn't contact the target at all yet. That starts with recon in a later phase.
+- Anyone who can reach port 9000 can send a change message. Real release systems "sign" their messages so fakes can be rejected; we'll add that when it matters.
+- A scan interrupted by a restart isn't resumed. It's marked interrupted, and you fire a new event.
+- Scans run one after another in the background of a single service. That's fine for a demo, but it isn't built for many simultaneous scans yet.
+
+### How to see it working
+
+1. Start the scanner API and the dashboard in two Terminal tabs (see "Run the scanner" in `README.md`). Open **http://localhost:3001**. It says "No scans yet", with "Scanner online" shown in green.
+2. In a third tab, fire a change message: `scanner/.venv/bin/python scanner/scripts/fire_event.py --endpoint /api/refunds --method POST --version v2`
+3. Within about 2 seconds, **Scan #1** appears. Watch its ten steps turn green one by one, about 15 seconds in total. The activity log shows "entered change_detection", "entered recon" and so on, ending with **scan completed**.
+4. Refresh the page: everything is still there. Stop the scanner API (Ctrl + C) and start it again: still there.
+5. Fire another event with a different endpoint (for example `--endpoint /api/payments`). A second scan appears at the top of the list.
