@@ -44,3 +44,11 @@ TARGET_BASE_URL = TARGET_PROFILE["portal_url"].rstrip("/")
 HTTP_TIMEOUT_SECONDS = float(os.getenv("HTTP_TIMEOUT_SECONDS", "15"))
 # Show the crawler's browser window instead of running it hidden (for demos/debugging).
 CRAWL_HEADED = os.getenv("CRAWL_HEADED", "false").lower() in ("1", "true", "yes")
+
+# ---------------- traffic log input (Phase 3) ----------------
+# Access logs are a provided input (as TBO would hand over gateway/LB logs).
+# The scanner reads only this file; it never reaches into the target to get it.
+TRAFFIC_LOG_PATH = Path(os.getenv(
+    "TRAFFIC_LOG_PATH", Path(__file__).resolve().parent.parent / "inputs" / "traffic_log.json"))
+# An endpoint with no traffic in the last N days of the log counts as unused (zombie).
+TRAFFIC_WINDOW_DAYS = int(os.getenv("TRAFFIC_WINDOW_DAYS", "30"))

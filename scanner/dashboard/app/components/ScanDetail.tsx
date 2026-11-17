@@ -1,7 +1,7 @@
 import { duration, formatDateTime, ScanDetail as Detail } from "../lib/api";
 import AgentLog from "./AgentLog";
 import FindingsPanel from "./FindingsPanel";
-import InventoryTable from "./InventoryTable";
+import InventoryTable, { CLASS_STYLES } from "./InventoryTable";
 import StageTimeline from "./StageTimeline";
 import StatusPill from "./StatusPill";
 
@@ -18,6 +18,8 @@ export default function ScanDetail({ scan }: { scan: Detail }) {
   const t = scan.trigger;
   const recon = scan.stages.find((s) => s.stage === "recon");
   const endpoints = scan.endpoints ?? [];
+  const classified = endpoints.some((e) => e.classification);
+  const count = (c: string) => endpoints.filter((e) => e.classification === c).length;
   return (
     <div className="space-y-6">
       <div className="card p-5">
@@ -45,12 +47,26 @@ export default function ScanDetail({ scan }: { scan: Detail }) {
         <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3">
           <div>
             <h3 className="card-title">API inventory</h3>
-            <p className="mt-0.5 text-xs text-slate-400">Discovered from outside: portal crawl, app.js, version probing</p>
+            <p className="mt-0.5 text-xs text-slate-400">Discovered from outside (portal crawl, app.js, version probing), then classified against provided traffic logs</p>
           </div>
-          <span className="text-xs text-slate-400">
-            {recon?.status === "running" && <span className="mr-2 text-blue-600">discovering…</span>}
-            {endpoints.length} endpoint{endpoints.length === 1 ? "" : "s"}
-          </span>
+          <div className="flex items-center gap-4 text-xs">
+            {recon?.status === "running" && <span className="text-blue-600">discovering…</span>}
+            {classified && (
+              <span className="flex items-center gap-1.5 font-medium">
+                {(["active", "zombie", "shadow"] as const).map((c, i) => (
+                  <span key={c} className="flex items-center gap-1.5">
+                    {i > 0 && <span className="text-slate-300">·</span>}
+                    <span className={CLASS_STYLES[c].text}>
+                      {CLASS_STYLES[c].label} {count(c)}
+                    </span>
+                  </span>
+                ))}
+              </span>
+            )}
+            <span className="text-slate-400">
+              {endpoints.length} endpoint{endpoints.length === 1 ? "" : "s"}
+            </span>
+          </div>
         </div>
         <InventoryTable endpoints={endpoints} reconStatus={recon?.status} />
       </section>

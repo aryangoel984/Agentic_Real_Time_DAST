@@ -46,6 +46,11 @@ export type Endpoint = {
   roles: string[];
   purpose: string | null;
   discovered_via: string[];
+  classification: "active" | "zombie" | "shadow" | null;
+  last_traffic_at: string | null;
+  traffic: { hits: number; hits_in_window: number; callers: { caller: string; hits: number }[] } | null;
+  recommendation: string | null;
+  owner: string | null;
 };
 
 export type ScanDetail = ScanSummary & { stages: Stage[]; logs: LogLine[]; endpoints: Endpoint[]; findings: Finding[] };

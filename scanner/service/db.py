@@ -12,6 +12,7 @@
 
 Phase 1 fills scan_runs, deployment_events, scan_stages and agent_logs.
 Phase 2 (recon) fills api_endpoints and audit_logs.
+Phase 3 (inventory) adds classification, traffic and recommendation to api_endpoints.
 The rest exist now so later phases grow into a fixed shape.
 """
 from datetime import datetime, timezone
@@ -110,7 +111,8 @@ class ApiEndpoint(Base):
     auth_basis: Mapped[str | None] = mapped_column(String(200), nullable=True)     # how auth_required was decided
     roles_json: Mapped[str | None] = mapped_column(Text, nullable=True)            # roles whose calls got through
     classification: Mapped[str | None] = mapped_column(String(20), nullable=True)  # active/zombie/shadow
-    last_traffic_at: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    last_traffic_at: Mapped[str | None] = mapped_column(String(50), nullable=True)  # ISO time, None = never
+    traffic_json: Mapped[str | None] = mapped_column(Text, nullable=True)          # {"hits", "hits_in_window", "callers"}
     business_area: Mapped[str | None] = mapped_column(String(50), nullable=True)   # bookings/payments/PII...
     owner: Mapped[str | None] = mapped_column(String(100), nullable=True)
     recommendation: Mapped[str | None] = mapped_column(Text, nullable=True)

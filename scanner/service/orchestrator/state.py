@@ -10,3 +10,4 @@ class ScanState(TypedDict, total=False):
     retest_round: int                                  # how many times retest has looped back
     findings_to_retest: list[int]                      # vulnerability ids waiting for a re-check (empty for now)
     endpoint_count: int                                # endpoints recon put in the API inventory
+    classification: dict                               # {active, zombie, shadow} counts from inventory

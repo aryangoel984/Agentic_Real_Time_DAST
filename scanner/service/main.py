@@ -130,7 +130,12 @@ def get_scan(scan_id: int):
                            "auth_required": e.auth_required, "auth_basis": e.auth_basis,
                            "roles": json.loads(e.roles_json) if e.roles_json else [],
                            "purpose": e.business_area,
-                           "discovered_via": e.discovered_via.split(",") if e.discovered_via else []}
+                           "discovered_via": e.discovered_via.split(",") if e.discovered_via else [],
+                           "classification": e.classification,
+                           "last_traffic_at": e.last_traffic_at,
+                           "traffic": json.loads(e.traffic_json) if e.traffic_json else None,
+                           "recommendation": e.recommendation,
+                           "owner": e.owner}
                           for e in endpoints],
             "findings": [{"id": v.id, "title": v.title, "severity": v.severity, "status": v.status}
                          for v in vulns],

@@ -22,6 +22,7 @@ _PURPOSE_RULES = [
     ("booking", "booking"),
     ("user", "user"),
     ("search", "search"),
+    ("partner", "partner"),
 ]
 
 

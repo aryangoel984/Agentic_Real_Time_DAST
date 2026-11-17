@@ -314,3 +314,91 @@ FastAPI (the tool the target is built with) automatically publishes a page at `/
 6. Read the agent log: you'll see each user sign in, every request captured, every version tried, and the final list, which contains no `partner-details`.
 7. Refresh the page or restart the scanner API: the inventory is still there.
 8. Open **http://localhost:8000/docs**: it says "Not Found".
+
+## Phase 3 — The inventory classifier (active, zombie, shadow)
+
+### What it is and why
+
+Recon (Phase 2) gave us a list of every API the scanner could **see** from outside. That isn't the whole picture. Some APIs are switched on but nobody uses them anymore. Others are used every day but are linked from nowhere, so an outsider can't see them. Both kinds are classic places for security holes, because nobody is watching them.
+
+This phase replaces the placeholder **Inventory** step. It compares two lists:
+
+- **What recon could see:** the inventory from Phase 2.
+- **What real traffic actually used:** the platform's access log, the record of every request that hit the platform's front gate.
+
+From the comparison, every API gets one of three labels:
+
+| Label | Plain meaning | Why it matters |
+|---|---|---|
+| **Active** | Recon found it, and real users have called it recently. | Normal. Keep monitoring and testing it. |
+| **Zombie** | Recon found it, but nobody has called it recently. | It's still switched on and forgotten. Fixes and patches often skip it. Turn it off or block it. |
+| **Shadow** | Real traffic uses it, but recon couldn't see it. | Nobody tracks it, documents it or tests it. Find out who owns it and bring it under control. |
+
+### How the comparison works
+
+1. **Read the access log.** Each line records one request: when, which method (read or write), which address, and who called it.
+2. **Tidy every address with the same rule recon uses.** Numbers become `{id}` and anything after `?` is dropped. So `/api/bookings/1003` in the log and `/api/bookings/{id}` in the inventory match. Both sides use the exact same rule, so they can never disagree about spelling.
+3. **Count each address in the log:** how many times it was called, when it was last called, and by whom.
+4. **Look at a recent window: the last 30 days of the log.** The window is counted back from the log's own last day (14 Nov), not from today. Otherwise, as days pass, everything would slowly look "unused" just because the log is old.
+5. **Label each API:**
+   - In the inventory and called in the window → **active**.
+   - In the inventory, not called in the window → **zombie**. This includes APIs found only by version probing.
+   - In the log, but not in the inventory → **shadow**. It's added to the inventory as a new row, marked "found by: traffic log".
+6. **Write down for each API:** its label, when it was last seen in traffic (or "never"), how many hits and from whom, a recommended action, and a likely owning team. The owner is guessed from the address (bookings → Bookings team, payments and refunds → Payments team, and so on) and is marked "(guess)".
+
+### What it found
+
+| | API | Why |
+|---|---|---|
+| **Active (7)** | login, search, create booking, look up booking, pay, refund, look up user | All were called within the last 30 days. |
+| **Zombie (1)** | `GET /api/v1/bookings/{id}` | Found by recon's version probing, but **never** seen in the log. The old version is still switched on. |
+| **Shadow (1)** | `GET /api/internal/partner-details` | Called 20 times, last on 11 Nov 2026, all by one internal machine (`10.0.4.17`, a program called `partner-sync`). Recon couldn't see it in Phase 2, because nothing links to it. The traffic log is what revealed it. |
+
+### Why the traffic log counts as a "provided input"
+
+TBO's problem statement offers gateway and load-balancer logs as something the security team is **given**. In real life, a company hands its testers a log export. The testers never log into the company's servers to fetch it themselves. We copy that exactly:
+
+- **The handover is one file.** The log was copied once into the scanner's own folder, as `scanner/inputs/traffic_log.json`. That file is "the logs TBO gave us".
+- **The scanner reads only that copy.** Its location is a setting (`TRAFFIC_LOG_PATH`), so a real TBO log can be dropped in later.
+- **Separation check (done at the end of this phase):**
+  - The scanner's code contains no path into the target's folder, database or API port.
+  - While it ran, the only files the scanner had open were its own.
+  - The scanner's request record shows the Inventory step sent **zero** requests to the target. Every request in that scan came from recon.
+- **The log says so too.** The Inventory step's first log line states the file it read and that the target's database and code were not accessed.
+
+### Dashboard changes (API inventory card)
+
+- **Summary in the card header:** **Active 7 · Zombie 1 · Shadow 1**, in green, amber and red.
+- **New Class column:**
+  - green **Active**
+  - amber **Zombie**
+  - red **Shadow**
+  - grey "pending" while recon is still running and the step hasn't happened yet
+- **Shadow and zombie rows come first**, lightly tinted. Each has a line underneath with last seen in traffic, hits and callers, the likely owner, and the recommended action.
+- **Last-seen dates are shown in UTC**, the same as the log. Otherwise an evening time on 11 Nov in UTC would show as 12 Nov in India and look like a mismatch.
+- **The shadow row honestly shows Auth "Unknown" and no roles.** The scanner has only seen it in the log. It hasn't touched it.
+
+### Key decisions and why
+
+- **The window is counted back from the log's end, not from today.** Explained above. The length (30 days) is a setting (`TRAFFIC_WINDOW_DAYS`).
+- **Shadow endpoints are labelled, not tested.** This step only reads a file. Probing or testing the shadow endpoint is for the attack phases, behind the safety gateway.
+- **The owner is a keyword guess.** It's a helpful starting point for "who do we tell?". It isn't a real list of which team owns which service.
+
+### Limitations
+
+- **The labels are only as good as the log.** If an API is used but its calls aren't logged, it will look like a zombie.
+- **The 30-day window is a choice.** A job that runs once every six weeks would be labelled zombie.
+- **The log is a fixed file.** If the target's log is regenerated, copy it again:
+  ```bash
+  cp backend/data/traffic_log.json scanner/inputs/traffic_log.json
+  ```
+- **One-time database reset.** The inventory table gained a column for traffic details, so `scanner/data/scanner.db` has to be deleted once after upgrading. This is the same as in Phase 2.
+
+### How to see it working
+
+1. Stop the scanner API, delete the old scanner database (`rm scanner/data/scanner.db*`), and start the scanner API again. The target API (8000), the portal (3000) and the dashboard (3001) should be running too.
+2. Fire a scan: `scanner/.venv/bin/python scanner/scripts/fire_event.py`
+3. Open **http://localhost:3001**. After recon (about 15–25 seconds), the **Inventory** step runs. The table gains its Class column, and the header shows **Active 7 · Zombie 1 · Shadow 1**.
+4. **Top row:** `GET /api/internal/partner-details`, red **Shadow**, found by **traffic log**, last seen 11 Nov 2026 (UTC), 20 hits from `10.0.4.17 (partner-sync/1.4)`, with the recommendation to investigate ownership.
+5. **Second row:** `GET /api/v1/bookings/{id}`, amber **Zombie**, last seen **never**, with the recommendation to decommission or restrict.
+6. **Agent log, Inventory lines:** the source file (with the note that the target wasn't touched), the log's dates and window, one line per API with its label, a highlighted shadow line, and the final count.
