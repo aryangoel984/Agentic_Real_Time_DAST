@@ -36,7 +36,19 @@ export type LogLine = { id: number; stage: string | null; level: string; message
 
 export type Finding = { id: number; title: string; severity: string | null; status: string };
 
-export type ScanDetail = ScanSummary & { stages: Stage[]; logs: LogLine[]; findings: Finding[] };
+export type Endpoint = {
+  id: number;
+  method: string;
+  path: string;
+  params: { path: string[]; query: string[]; body: string[] } | null;
+  auth_required: boolean | null;
+  auth_basis: string | null;
+  roles: string[];
+  purpose: string | null;
+  discovered_via: string[];
+};
+
+export type ScanDetail = ScanSummary & { stages: Stage[]; logs: LogLine[]; endpoints: Endpoint[]; findings: Finding[] };
 
 const BASE = "/scanner-api";
 

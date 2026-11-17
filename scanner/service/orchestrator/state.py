@@ -9,3 +9,4 @@ class ScanState(TypedDict, total=False):
     stage_history: Annotated[list[str], operator.add]  # stages entered, in order (appended by each stage)
     retest_round: int                                  # how many times retest has looped back
     findings_to_retest: list[int]                      # vulnerability ids waiting for a re-check (empty for now)
+    endpoint_count: int                                # endpoints recon put in the API inventory

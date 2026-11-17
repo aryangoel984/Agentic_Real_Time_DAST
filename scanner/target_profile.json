@@ -1,0 +1,11 @@
+{
+  "_about": "What the scanner is given about the target, like the brief a pentest team receives: the public portal address, test accounts, and one known booking per agency. Dev-only test values.",
+  "portal_url": "http://localhost:3000",
+  "bundle_path": "/app.js",
+  "accounts": [
+    {"label": "A-admin",    "username": "a_admin",    "password": "DelhiAdmin@123",  "sample_booking_id": 1003},
+    {"label": "A-subagent", "username": "a_subagent", "password": "DelhiSub@123",    "sample_booking_id": 1003},
+    {"label": "B-admin",    "username": "b_admin",    "password": "MumbaiAdmin@123", "sample_booking_id": 1002},
+    {"label": "B-subagent", "username": "b_subagent", "password": "MumbaiSub@123",   "sample_booking_id": 1002}
+  ]
+}

@@ -2,7 +2,7 @@
 
 - POST /events/deploy  : receive a "something changed" event, start a scan
 - GET  /scans          : list scan runs
-- GET  /scans/{id}     : one scan with its event, stages, logs and findings
+- GET  /scans/{id}     : one scan with its event, stages, logs, API inventory and findings
 
 This service is independent of the target platform. It has its own database
 and never imports the target's code or opens the target's database.
@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 
 from .config import STAGES
-from .db import (AgentLog, DeploymentEvent, ScanRun, ScanStage, SessionLocal,
+from .db import (AgentLog, ApiEndpoint, DeploymentEvent, ScanRun, ScanStage, SessionLocal,
                  Vulnerability, init_db, now)
 from .orchestrator.graph import run_scan
 
@@ -114,6 +114,8 @@ def get_scan(scan_id: int):
         logs = db.scalars(select(AgentLog).where(AgentLog.scan_id == scan_id)
                           .order_by(AgentLog.id)).all()
         vulns = db.scalars(select(Vulnerability).where(Vulnerability.scan_id == scan_id)).all()
+        endpoints = db.scalars(select(ApiEndpoint).where(ApiEndpoint.scan_id == scan_id)
+                               .order_by(ApiEndpoint.path, ApiEndpoint.method)).all()
         done = sum(1 for s in stages if s.status == "done")
         return {
             **_run_dict(run, ev, done),
@@ -123,6 +125,13 @@ def get_scan(scan_id: int):
                        for s in stages],
             "logs": [{"id": l.id, "stage": l.stage, "level": l.level, "message": l.message,
                       "created_at": _iso(l.created_at)} for l in logs],
+            "endpoints": [{"id": e.id, "method": e.method, "path": e.path,
+                           "params": json.loads(e.params_json) if e.params_json else None,
+                           "auth_required": e.auth_required, "auth_basis": e.auth_basis,
+                           "roles": json.loads(e.roles_json) if e.roles_json else [],
+                           "purpose": e.business_area,
+                           "discovered_via": e.discovered_via.split(",") if e.discovered_via else []}
+                          for e in endpoints],
             "findings": [{"id": v.id, "title": v.title, "severity": v.severity, "status": v.status}
                          for v in vulns],
         }

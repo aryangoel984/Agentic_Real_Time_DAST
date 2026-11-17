@@ -14,7 +14,10 @@ from . import config
 from .auth import current_user, issue_token, verify_password
 from .db import Agency, Booking, Payment, Refund, User, get_db
 
-app = FastAPI(title="TravelHub B2B (mock target)", version="3.2.0")
+# Auto-generated API docs (/docs, /redoc, /openapi.json) are switched off so the
+# scanner cannot use them as a shortcut: it must discover routes from the outside.
+app = FastAPI(title="TravelHub B2B (mock target)", version="3.2.0",
+              docs_url=None, redoc_url=None, openapi_url=None)
 
 
 # ---------- request bodies ----------

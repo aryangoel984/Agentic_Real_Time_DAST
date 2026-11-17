@@ -5,7 +5,7 @@ export default function FindingsPanel({ findings }: { findings: Finding[] }) {
     return (
       <div className="px-5 py-10 text-center">
         <p className="text-sm font-medium text-slate-600">No findings</p>
-        <p className="mt-1 text-xs text-slate-400">Pipeline stages are stubs in this phase. Real testing arrives in later phases.</p>
+        <p className="mt-1 text-xs text-slate-400">Testing stages are still placeholders. Real testing arrives in later phases.</p>
       </div>
     );
   }

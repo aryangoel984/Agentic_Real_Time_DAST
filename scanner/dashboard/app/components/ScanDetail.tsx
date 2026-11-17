@@ -1,6 +1,7 @@
 import { duration, formatDateTime, ScanDetail as Detail } from "../lib/api";
 import AgentLog from "./AgentLog";
 import FindingsPanel from "./FindingsPanel";
+import InventoryTable from "./InventoryTable";
 import StageTimeline from "./StageTimeline";
 import StatusPill from "./StatusPill";
 
@@ -15,6 +16,8 @@ function Meta({ label, children }: { label: string; children: React.ReactNode })
 
 export default function ScanDetail({ scan }: { scan: Detail }) {
   const t = scan.trigger;
+  const recon = scan.stages.find((s) => s.stage === "recon");
+  const endpoints = scan.endpoints ?? [];
   return (
     <div className="space-y-6">
       <div className="card p-5">
@@ -37,6 +40,20 @@ export default function ScanDetail({ scan }: { scan: Detail }) {
           <Meta label="Finished">{formatDateTime(scan.finished_at)}</Meta>
         </dl>
       </div>
+
+      <section className="card overflow-hidden">
+        <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3">
+          <div>
+            <h3 className="card-title">API inventory</h3>
+            <p className="mt-0.5 text-xs text-slate-400">Discovered from outside: portal crawl, app.js, version probing</p>
+          </div>
+          <span className="text-xs text-slate-400">
+            {recon?.status === "running" && <span className="mr-2 text-blue-600">discovering…</span>}
+            {endpoints.length} endpoint{endpoints.length === 1 ? "" : "s"}
+          </span>
+        </div>
+        <InventoryTable endpoints={endpoints} reconStatus={recon?.status} />
+      </section>
 
       <div className="grid gap-6 xl:grid-cols-[minmax(0,22rem)_minmax(0,1fr)]">
         <section className="card p-5">

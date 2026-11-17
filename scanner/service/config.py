@@ -30,3 +30,17 @@ STAGES = [
     "reporting",
     "retest",
 ]
+
+# ---------------- target (Phase 2) ----------------
+# Everything the scanner knows about the target comes from this profile file:
+# the public portal address and the test accounts it was given. The scanner
+# reaches the target only over HTTP through that portal.
+import json as _json
+
+TARGET_PROFILE_PATH = Path(os.getenv(
+    "TARGET_PROFILE", Path(__file__).resolve().parent.parent / "target_profile.json"))
+TARGET_PROFILE = _json.loads(TARGET_PROFILE_PATH.read_text())
+TARGET_BASE_URL = TARGET_PROFILE["portal_url"].rstrip("/")
+HTTP_TIMEOUT_SECONDS = float(os.getenv("HTTP_TIMEOUT_SECONDS", "15"))
+# Show the crawler's browser window instead of running it hidden (for demos/debugging).
+CRAWL_HEADED = os.getenv("CRAWL_HEADED", "false").lower() in ("1", "true", "yes")

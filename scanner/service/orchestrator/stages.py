@@ -1,6 +1,6 @@
 """The ten pipeline stages.
 
-Phase 1: every stage is a stub. The shared wrapper (`run_stage`) does the
+Phase 1: every stage is a stub. Phase 2: recon is real (see service/recon). The shared wrapper (`run_stage`) does the
 bookkeeping: mark the stage running, log "entered <stage>", wait briefly so
 a human can watch, mark it done, and save the scan's state. The per-stage
 functions return only what that stage changes; for now that is nothing,
@@ -16,6 +16,7 @@ from sqlalchemy import select
 
 from ..config import STUB_STAGE_DELAY_SECONDS
 from ..db import AgentLog, ScanRun, ScanStage, SessionLocal, now
+from ..recon import run_recon
 from .state import ScanState
 
 
@@ -58,7 +59,9 @@ def change_detection(state: ScanState) -> dict:
 
 
 def recon(state: ScanState) -> dict:
-    return {}
+    scan_id = state["scan_id"]
+    count = run_recon(scan_id, lambda msg, level="info": log(scan_id, "recon", msg, level))
+    return {"endpoint_count": count}
 
 
 def inventory(state: ScanState) -> dict:
