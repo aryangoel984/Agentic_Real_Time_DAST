@@ -402,3 +402,153 @@ TBO's problem statement offers gateway and load-balancer logs as something the s
 4. **Top row:** `GET /api/internal/partner-details`, red **Shadow**, found by **traffic log**, last seen 11 Nov 2026 (UTC), 20 hits from `10.0.4.17 (partner-sync/1.4)`, with the recommendation to investigate ownership.
 5. **Second row:** `GET /api/v1/bookings/{id}`, amber **Zombie**, last seen **never**, with the recommendation to decommission or restrict.
 6. **Agent log, Inventory lines:** the source file (with the note that the target wasn't touched), the log's dates and window, one line per API with its label, a highlighted shadow line, and the final count.
+
+## Phase 4 — The attack planner (the AI plans, it never acts)
+
+### What it is and why
+
+By now the scanner knows every API it can find and whether each one is active, a zombie or a shadow. Before it tests anything, it needs to decide **which tests are worth running on which API, and why**. That decision is called **attack planning**.
+
+Testing every possible attack on every API would be slow, noisy and risky. A refund API needs money tests, like "can I refund twice?". A booking lookup needs an access test: "can agency A read agency B's booking?". A login page needs a password test. Choosing well is what turns a blind scanner into a smart one.
+
+This phase replaces the placeholder **Attack planning** step with a real planner. **It only writes a plan. Nothing is executed.** Phase 5 (the safety gateway) and Phase 6 (execution) act on the plan later.
+
+### Why the AI only plans and never acts
+
+An AI model is good at reasoning about context. For example: "only admins reached this refund API, so test whether a sub-agent can use it too". But an AI can also be wrong, make things up, or be misled. So the jobs are split:
+
+- **The AI only writes suggestions.** It receives a text description of the APIs and replies with a JSON list of `{test_type, reason}` for each one. It is given **no tools, no target address, no passwords, no login tokens and no booking data**, so it has no way to send a request even if it wanted to.
+- **Our code has the final say.** Every suggestion is checked against a fixed **approved test catalogue** written in code. Anything not in the catalogue, or not applicable to that API, is thrown away and logged.
+- **Our code will do the executing**, later, through the safety gateway, which logs every request and asks before anything risky.
+
+### The approved test catalogue
+
+These are the only test types the scanner may ever plan:
+
+| Test type | What it checks | Applies to | Risk |
+|---|---|---|---|
+| Cross-agency access | Can agency A read or act on agency B's record? | read & write | medium |
+| Duplicate refund | Can the same booking be refunded twice? | write | **high** (moves money) |
+| Amount validation / price tampering | Does the server trust an amount sent by the client? | write | **high** (moves money) |
+| Role authorization | Can a sub-agent do an admin-only action? | read & write | medium |
+| Missing authentication | Does it answer with no login at all? | read & write | low |
+| Zombie version ownership check | Does an old version skip checks the current one has? | read | medium |
+| Weak authentication | Does login allow weak passwords or unlimited guessing? | write | medium |
+
+The two **high-risk** tests are marked "needs approval before running". Phase 5 will enforce that.
+
+### The two planners
+
+1. **The AI planner (Groq).** Groq is an online service that runs open AI models. We use the model `openai/gpt-oss-120b`, through Groq's official Python library.
+   - It runs only when a Groq key (`GROQ_API_KEY`) is set in the terminal where the scanner starts.
+   - It makes **one request per scan** for all APIs together.
+   - The reply is requested as JSON only.
+   - The AI may also suggest ideas outside the catalogue. Those are exactly what the guard drops, and you can see them in the log.
+   - Groq has a free tier, and one request per scan fits easily within it.
+2. **The rule-based planner (always available).** It is a fixed set of rules in our own code:
+   - shadow → missing authentication
+   - zombie → ownership check
+   - refund → duplicate + amount + role
+   - payment → amount (price tampering) + cross-agency
+   - lookups by ID → cross-agency
+   - create booking → cross-agency
+   - login → weak authentication
+   - search → no tests, with a reason
+
+   Each test comes with a plain-English reason. It needs no internet and no key.
+
+**Which one runs?**
+- **Default (`PLANNER_PROVIDER=auto`):** Groq if a key is set, otherwise rules.
+- **Groq call fails:** for any reason (no internet, wrong key, rate limit, unreadable reply), the scan **doesn't fail**. It switches to the rule-based planner and says so in the log.
+- **Groq skips an API:** the rules fill that one in, and the log says so.
+
+### The catalogue guard
+
+Every plan, from the AI or from the rules, passes through the same check. A suggestion is kept only if:
+
+- its test type is in the catalogue
+- the test applies to that API's method. For example, "duplicate refund" on a read-only lookup is dropped.
+- it names an API that exists in this scan
+- it has a reason
+
+Duplicates are merged. Every dropped item becomes a warning line in the agent log, and the Attack plan card lists them under "Dropped by the catalogue guard".
+
+To see the guard work without any key, run:
+```bash
+scanner/.venv/bin/python scanner/scripts/check_plan_validation.py
+```
+It feeds the guard a fake AI answer containing things like `delete_all_bookings` and `rate_limit_test`, a refund test on a read-only API, and a test with no reason. It prints which items were kept and which were dropped, and why.
+
+### What is stored
+
+- **The `test_cases` table:** each planned test is saved with its API, test type, plain-English reason, risk level, whether it needs approval, which planner chose it, and status **planned**.
+- **The scan's saved state:** which planner ran and why, the model name, the number of tests, the dropped items, and the reason for any API with no tests.
+- **New columns:** the table gained three (`test_type`, `reason`, `planned_by`), so `scanner/data/scanner.db` must be deleted once after upgrading.
+
+### What it planned (rule-based run)
+
+| API | Planned tests |
+|---|---|
+| `GET /api/internal/partner-details` (shadow) | missing authentication |
+| `GET /api/v1/bookings/{id}` (zombie) | zombie ownership check |
+| `POST /api/refunds` | duplicate refund, amount validation, role authorization |
+| `POST /api/payments` | amount validation (price tampering), cross-agency access |
+| `GET /api/bookings/{id}`, `GET /api/users/{id}`, `POST /api/bookings` | cross-agency access |
+| `POST /api/login` | weak authentication |
+| `GET /api/search` | none: shared results, no per-agency record, login already enforced |
+
+That's 11 tests across 8 APIs. **0 requests were sent to the target during planning.** The planner counts this from the scanner's request record and states it in the log.
+
+### Keeping the scanner outside the target
+
+- **The planner never contacts the target.** It reads only the scanner's own database (the inventory from Phases 2–3).
+- **The only outbound request in this step is the one to Groq**, and only when a key is set. That request carries API descriptions: paths, field names, role labels and classifications. In this project those are all made-up. No passwords, tokens, customer data or the target's address are sent.
+- **Rules mode keeps everything on the machine.**
+
+### How it was tested
+
+- **What is sent to Groq:** the exact request was checked. It contains no target address or port, no passwords, no login tokens, no customer data, no caller IPs and no API key. "password" appears only as a field name.
+- **Full scans with Groq:** a full scan ran with Groq planning. All 10 steps completed, the inventory had 9 APIs (7 active, 1 zombie, 1 shadow), and the planning step sent **0** requests to the target. All 108 recorded requests came from recon.
+- **Repeated planning:**
+  - Groq planning was repeated 6 times. Each took 5–30 seconds and produced 12–15 tests.
+  - It never planned "missing authentication" on an API where login was already verified.
+  - It never proposed a test outside the catalogue. So the guard was proven with the check script rather than by a live AI mistake.
+  - One run missed a required test. That is why the rules minimum was added. In the 3 runs after that change, every required test was present.
+- **Rules mode:** rules mode (`PLANNER_PROVIDER=rules`) planned the same 11 tests every time.
+- **Fallbacks:** a fake key made Groq answer "Invalid API Key", and the scan fell back to rules without failing.
+
+### Key decisions and why
+
+- **One AI request per scan, not one per API.** It's faster, uses far less of the free quota, and gives a consistent plan across APIs.
+- **The AI may suggest extra ideas.** We let it, because it's realistic and makes the guard visible. Its ideas are recorded as "dropped", never planned.
+- **The fallback is automatic.** A scanner that stops working when an outside AI service is down would be a bad security tool.
+- **Groq instead of Claude.** Claude's API needs a paid key that the Claude Pro plan doesn't include. Groq has a free tier. Switching provider later means adding one small file in `scanner/service/planner/`.
+
+### Limitations
+
+- **What the first live Groq run taught us.** The AI planned "missing authentication" on every API, even where recon had already *verified* that login was required. That's 21 tests where about 12 made sense. The cause was that it wasn't being told how auth had been decided. We now pass that detail in and instruct it not to re-test what discovery already proved. The next run planned 14 sensible tests.
+- **The AI's choices vary from run to run, so the rules act as a guaranteed minimum.** In testing, one Groq run left out "role authorization" on refunds. So whenever Groq plans, any test the rule-based planner would have chosen but the AI missed is added back. The log shows a line "rules minimum added …", and the dashboard tags it "added by rules". The AI can add to the plan, but it can never shrink it below the rules.
+- **The AI still adds a few debatable tests**, for example cross-agency access on search. These are approved types, so they are kept. Over-testing costs time, not safety, because execution is gated in Phase 5.
+- **The AI's wording varies between runs.** The guard keeps the *types* of tests within the fixed catalogue, but the reasons will read differently each time.
+- **The plan is only as good as the inventory.** The shadow API's login requirement is still "Unknown", because nothing has touched it yet.
+- **The planner only knows what's in the catalogue.** New kinds of test need a code change. That is deliberate.
+- **Nothing is executed.** No hole is confirmed yet. That starts after the safety gateway (Phase 5).
+
+### How to see it working
+
+1. Stop the scanner API, delete the old database (`rm scanner/data/scanner.db*`), and install the new library once:
+   ```bash
+   scanner/.venv/bin/pip install -r scanner/requirements.txt
+   ```
+2. **Without a key:** start the scanner API as usual and fire a scan.
+   - The **Attack plan** card (under the inventory) says "Planned by rule-based fallback (no GROQ_API_KEY set)" and shows the 11 tests above, each with its reason.
+   - The money tests show "needs approval before running".
+   - The footer says 0 requests were sent to the target.
+3. **With your Groq key:** put the key in `scanner/.env` as one line, `GROQ_API_KEY=your_key`. The scanner loads this file when it starts, and git ignores it, so it is never committed. Alternatively, set the key in the start command itself (a key typed in the terminal wins over the file):
+   ```bash
+   cd scanner && GROQ_API_KEY=your_key .venv/bin/uvicorn service.main:app --port 9000
+   ```
+   Restart the scanner API after adding or changing the key.
+   - Fire a scan. The card says "Planned by Groq LLM (openai/gpt-oss-120b)" and the reasons are the AI's own wording.
+   - Any suggestions outside the catalogue appear as amber "dropped" lines in the log and at the bottom of the card.
+4. **Guard proof without a key:** run `check_plan_validation.py`, as shown above.

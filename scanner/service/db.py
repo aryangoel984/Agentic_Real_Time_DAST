@@ -13,6 +13,7 @@
 Phase 1 fills scan_runs, deployment_events, scan_stages and agent_logs.
 Phase 2 (recon) fills api_endpoints and audit_logs.
 Phase 3 (inventory) adds classification, traffic and recommendation to api_endpoints.
+Phase 4 (attack planning) fills test_cases with planned (not executed) tests.
 The rest exist now so later phases grow into a fixed shape.
 """
 from datetime import datetime, timezone
@@ -125,6 +126,9 @@ class TestCase(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     scan_id: Mapped[int] = mapped_column(ForeignKey("scan_runs.id"), index=True)
     endpoint_id: Mapped[int | None] = mapped_column(ForeignKey("api_endpoints.id"), nullable=True)
+    test_type: Mapped[str | None] = mapped_column(String(50), nullable=True)      # id from the approved catalogue
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)              # planner's plain-English reason
+    planned_by: Mapped[str | None] = mapped_column(String(20), nullable=True)    # groq / rules
     vuln_class: Mapped[str | None] = mapped_column(String(50), nullable=True)      # access_control/business_logic/...
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     role_used: Mapped[str | None] = mapped_column(String(50), nullable=True)

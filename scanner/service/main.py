@@ -2,7 +2,7 @@
 
 - POST /events/deploy  : receive a "something changed" event, start a scan
 - GET  /scans          : list scan runs
-- GET  /scans/{id}     : one scan with its event, stages, logs, API inventory and findings
+- GET  /scans/{id}     : one scan with its event, stages, logs, API inventory, attack plan and findings
 
 This service is independent of the target platform. It has its own database
 and never imports the target's code or opens the target's database.
@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 
 from .config import STAGES
-from .db import (AgentLog, ApiEndpoint, DeploymentEvent, ScanRun, ScanStage, SessionLocal,
+from .db import (AgentLog, ApiEndpoint, DeploymentEvent, ScanRun, ScanStage, SessionLocal, TestCase,
                  Vulnerability, init_db, now)
 from .orchestrator.graph import run_scan
 
@@ -114,6 +114,7 @@ def get_scan(scan_id: int):
         logs = db.scalars(select(AgentLog).where(AgentLog.scan_id == scan_id)
                           .order_by(AgentLog.id)).all()
         vulns = db.scalars(select(Vulnerability).where(Vulnerability.scan_id == scan_id)).all()
+        tests = db.scalars(select(TestCase).where(TestCase.scan_id == scan_id).order_by(TestCase.id)).all()
         endpoints = db.scalars(select(ApiEndpoint).where(ApiEndpoint.scan_id == scan_id)
                                .order_by(ApiEndpoint.path, ApiEndpoint.method)).all()
         done = sum(1 for s in stages if s.status == "done")
@@ -137,6 +138,10 @@ def get_scan(scan_id: int):
                            "recommendation": e.recommendation,
                            "owner": e.owner}
                           for e in endpoints],
+            "test_cases": [{"id": t.id, "endpoint_id": t.endpoint_id, "test_type": t.test_type,
+                            "name": t.description, "reason": t.reason, "risk_level": t.risk_level,
+                            "requires_approval": t.requires_approval, "planned_by": t.planned_by,
+                            "status": t.status} for t in tests],
             "findings": [{"id": v.id, "title": v.title, "severity": v.severity, "status": v.status}
                          for v in vulns],
         }

@@ -1,5 +1,6 @@
 import { duration, formatDateTime, ScanDetail as Detail } from "../lib/api";
 import AgentLog from "./AgentLog";
+import AttackPlan, { PlanHeader } from "./AttackPlan";
 import FindingsPanel from "./FindingsPanel";
 import InventoryTable, { CLASS_STYLES } from "./InventoryTable";
 import StageTimeline from "./StageTimeline";
@@ -17,6 +18,9 @@ function Meta({ label, children }: { label: string; children: React.ReactNode })
 export default function ScanDetail({ scan }: { scan: Detail }) {
   const t = scan.trigger;
   const recon = scan.stages.find((s) => s.stage === "recon");
+  const planning = scan.stages.find((s) => s.stage === "attack_planning");
+  const plan = scan.state?.plan;
+  const tests = scan.test_cases ?? [];
   const endpoints = scan.endpoints ?? [];
   const classified = endpoints.some((e) => e.classification);
   const count = (c: string) => endpoints.filter((e) => e.classification === c).length;
@@ -69,6 +73,17 @@ export default function ScanDetail({ scan }: { scan: Detail }) {
           </div>
         </div>
         <InventoryTable endpoints={endpoints} reconStatus={recon?.status} />
+      </section>
+
+      <section className="card overflow-hidden">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 px-5 py-3">
+          <div>
+            <h3 className="card-title">Attack plan</h3>
+            <p className="mt-0.5 text-xs text-slate-400">Tests chosen per endpoint from the approved catalogue, with reasons. Not executed.</p>
+          </div>
+          <PlanHeader plan={plan} count={tests.length} />
+        </div>
+        <AttackPlan endpoints={endpoints} tests={tests} plan={plan} stageStatus={planning?.status} />
       </section>
 
       <div className="grid gap-6 xl:grid-cols-[minmax(0,22rem)_minmax(0,1fr)]">

@@ -1,7 +1,8 @@
 """The ten pipeline stages.
 
 Phase 1: every stage is a stub. Phase 2: recon is real (see service/recon).
-Phase 3: inventory is real (see service/inventory). The shared wrapper (`run_stage`) does the
+Phase 3: inventory is real (see service/inventory).
+Phase 4: attack_planning is real (see service/planner); it plans, never executes. The shared wrapper (`run_stage`) does the
 bookkeeping: mark the stage running, log "entered <stage>", wait briefly so
 a human can watch, mark it done, and save the scan's state. The per-stage
 functions return only what that stage changes; for now that is nothing,
@@ -18,6 +19,7 @@ from sqlalchemy import select
 from ..config import STUB_STAGE_DELAY_SECONDS
 from ..db import AgentLog, ScanRun, ScanStage, SessionLocal, now
 from ..inventory import classify
+from ..planner import run_planning
 from ..recon import run_recon
 from .state import ScanState
 
@@ -73,7 +75,9 @@ def inventory(state: ScanState) -> dict:
 
 
 def attack_planning(state: ScanState) -> dict:
-    return {}
+    scan_id = state["scan_id"]
+    summary = run_planning(scan_id, lambda msg, level="info": log(scan_id, "attack_planning", msg, level))
+    return {"plan": summary}
 
 
 def safety_gateway(state: ScanState) -> dict:

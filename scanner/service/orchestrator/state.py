@@ -11,3 +11,4 @@ class ScanState(TypedDict, total=False):
     findings_to_retest: list[int]                      # vulnerability ids waiting for a re-check (empty for now)
     endpoint_count: int                                # endpoints recon put in the API inventory
     classification: dict                               # {active, zombie, shadow} counts from inventory
+    plan: dict                                         # attack planner summary: planner, model, counts, dropped, skips

@@ -6,6 +6,12 @@ The scanner is a separate service from the target. It has its own database
 import os
 from pathlib import Path
 
+from dotenv import load_dotenv
+
+# Local secrets (e.g. GROQ_API_KEY) can live in scanner/.env, which git ignores.
+# A value already set in the terminal wins over the file.
+load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=False)
+
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 DATA_DIR.mkdir(exist_ok=True)
 DATABASE_URL = os.getenv("SCANNER_DATABASE_URL", f"sqlite:///{DATA_DIR / 'scanner.db'}")
@@ -52,3 +58,13 @@ TRAFFIC_LOG_PATH = Path(os.getenv(
     "TRAFFIC_LOG_PATH", Path(__file__).resolve().parent.parent / "inputs" / "traffic_log.json"))
 # An endpoint with no traffic in the last N days of the log counts as unused (zombie).
 TRAFFIC_WINDOW_DAYS = int(os.getenv("TRAFFIC_WINDOW_DAYS", "30"))
+
+# ---------------- attack planner (Phase 4) ----------------
+# auto  = use Groq if GROQ_API_KEY is set, otherwise the rule-based planner
+# groq  = always try Groq (falls back to rules if the call fails)
+# rules = never call an LLM
+PLANNER_PROVIDER = os.getenv("PLANNER_PROVIDER", "auto").lower()
+PLANNER_MODEL = os.getenv("PLANNER_MODEL", "openai/gpt-oss-120b")
+PLANNER_TEMPERATURE = float(os.getenv("PLANNER_TEMPERATURE", "0.3"))
+PLANNER_REASONING_EFFORT = os.getenv("PLANNER_REASONING_EFFORT", "medium")
+PLANNER_TIMEOUT_SECONDS = float(os.getenv("PLANNER_TIMEOUT_SECONDS", "60"))

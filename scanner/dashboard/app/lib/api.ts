@@ -53,7 +53,37 @@ export type Endpoint = {
   owner: string | null;
 };
 
-export type ScanDetail = ScanSummary & { stages: Stage[]; logs: LogLine[]; endpoints: Endpoint[]; findings: Finding[] };
+export type TestCase = {
+  id: number;
+  endpoint_id: number;
+  test_type: string;
+  name: string;
+  reason: string;
+  risk_level: "low" | "medium" | "high";
+  requires_approval: boolean;
+  planned_by: string;
+  status: string;
+};
+
+export type PlanSummary = {
+  planner: "groq" | "rules";
+  model: string | null;
+  why: string;
+  tests: number;
+  floor_added?: number;
+  dropped: string[];
+  skips: Record<string, string>;
+  requests_to_target: number;
+};
+
+export type ScanDetail = ScanSummary & {
+  stages: Stage[];
+  logs: LogLine[];
+  endpoints: Endpoint[];
+  test_cases: TestCase[];
+  findings: Finding[];
+  state: { plan?: PlanSummary } | null;
+};
 
 const BASE = "/scanner-api";
 
