@@ -6,6 +6,10 @@ const STYLES: Record<string, string> = {
   done: "bg-emerald-50 text-emerald-700 ring-emerald-200",
   failed: "bg-red-50 text-red-700 ring-red-200",
   interrupted: "bg-amber-50 text-amber-800 ring-amber-200",
+  paused: "bg-amber-50 text-amber-800 ring-amber-200",
+  halted: "bg-red-50 text-red-700 ring-red-200",
+  killed: "bg-red-50 text-red-700 ring-red-200",
+  stopped: "bg-red-50 text-red-700 ring-red-200",
 };
 
 export default function StatusPill({ status }: { status: string }) {

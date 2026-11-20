@@ -3,6 +3,9 @@
 - POST /events/deploy  : receive a "something changed" event, start a scan
 - GET  /scans          : list scan runs
 - GET  /scans/{id}     : one scan with its event, stages, logs, API inventory, attack plan and findings
+- GET  /scans/{id}/audit : safety gateway decisions (audit log, masked) and a safety summary
+- POST /scans/{id}/tests/{tid}/approve | deny : human decision on a high-risk test
+- POST /scans/{id}/kill : kill switch, halts every outgoing request for the scan
 
 This service is independent of the target platform. It has its own database
 and never imports the target's code or opens the target's database.
@@ -13,9 +16,10 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 
-from .config import STAGES
-from .db import (AgentLog, ApiEndpoint, DeploymentEvent, ScanRun, ScanStage, SessionLocal, TestCase,
-                 Vulnerability, init_db, now)
+from . import gateway
+from .config import GATEWAY_MAX_RPS, STAGES
+from .db import (AgentLog, ApiEndpoint, AuditLog, DeploymentEvent, Evidence, ScanRun, ScanStage, SessionLocal,
+                 TestCase, Vulnerability, init_db, now)
 from .orchestrator.graph import run_scan
 
 app = FastAPI(title="Agentic DAST Scanner", version="0.1.0")
@@ -86,6 +90,7 @@ def _run_dict(run: ScanRun, ev: DeploymentEvent | None, done: int):
     return {"id": run.id, "status": run.status, "current_stage": run.current_stage,
             "created_at": _iso(run.created_at), "started_at": _iso(run.started_at),
             "finished_at": _iso(run.finished_at), "error": run.error,
+            "paused_reason": run.paused_reason, "halted_by": run.halted_by, "halt_reason": run.halt_reason,
             "stages_done": done, "stages_total": len(STAGES), "trigger": _event_dict(ev)}
 
 
@@ -115,6 +120,11 @@ def get_scan(scan_id: int):
                           .order_by(AgentLog.id)).all()
         vulns = db.scalars(select(Vulnerability).where(Vulnerability.scan_id == scan_id)).all()
         tests = db.scalars(select(TestCase).where(TestCase.scan_id == scan_id).order_by(TestCase.id)).all()
+        evidence: dict[int, list] = {}
+        if tests:
+            for item in db.scalars(select(Evidence).where(Evidence.test_case_id.in_([t.id for t in tests]))
+                                   .order_by(Evidence.id)):
+                evidence.setdefault(item.test_case_id, []).append(item)
         endpoints = db.scalars(select(ApiEndpoint).where(ApiEndpoint.scan_id == scan_id)
                                .order_by(ApiEndpoint.path, ApiEndpoint.method)).all()
         done = sum(1 for s in stages if s.status == "done")
@@ -141,7 +151,97 @@ def get_scan(scan_id: int):
             "test_cases": [{"id": t.id, "endpoint_id": t.endpoint_id, "test_type": t.test_type,
                             "name": t.description, "reason": t.reason, "risk_level": t.risk_level,
                             "requires_approval": t.requires_approval, "planned_by": t.planned_by,
-                            "status": t.status} for t in tests],
+                            "status": t.status, "exec_status": t.exec_status, "raw_result": t.raw_result,
+                            "result_summary": t.result_summary, "executed_at": _iso(t.executed_at),
+                            "evidence": [{"request": json.loads(x.request_json) if x.request_json else None,
+                                          "response": json.loads(x.response_json) if x.response_json else None,
+                                          "note": x.notes} for x in evidence.get(t.id, [])]}
+                           for t in tests],
             "findings": [{"id": v.id, "title": v.title, "severity": v.severity, "status": v.status}
                          for v in vulns],
         }
+
+
+# ---------------- safety gateway (Phase 5) ----------------
+
+def _max_per_second(times: list) -> int:
+    """Most requests sent inside any 1-second window [t, t+1)."""
+    best, j = 0, 0
+    for i in range(len(times)):
+        while (times[i] - times[j]).total_seconds() >= 1:
+            j += 1
+        best = max(best, i - j + 1)
+    return best
+
+
+@app.get("/scans/{scan_id}/audit")
+def get_audit(scan_id: int, limit: int = 400):
+    with SessionLocal() as db:
+        run = db.get(ScanRun, scan_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="Scan not found")
+        counts = dict(db.execute(select(AuditLog.decision, func.count()).where(AuditLog.scan_id == scan_id)
+                                 .group_by(AuditLog.decision)).all())
+        sent_times = db.scalars(select(AuditLog.sent_at).where(AuditLog.scan_id == scan_id, AuditLog.sent.is_(True))
+                                .order_by(AuditLog.sent_at)).all()
+        rows = db.scalars(select(AuditLog).where(AuditLog.scan_id == scan_id)
+                          .order_by(AuditLog.id.desc()).limit(limit)).all()
+        return {
+            "summary": {"allowed": counts.get("allow", 0), "held": counts.get("hold", 0),
+                        "blocked": counts.get("block", 0), "sent": len(sent_times),
+                        "rate_cap": GATEWAY_MAX_RPS, "max_per_second": _max_per_second(sent_times),
+                        "paused_reason": run.paused_reason, "halted_by": run.halted_by,
+                        "halt_reason": run.halt_reason, "status": run.status},
+            "rows": [{"id": a.id, "at": _iso(a.sent_at), "stage": a.stage, "method": a.method, "url": a.url,
+                      "decision": a.decision, "reason": a.reason, "status": a.response_status, "sent": a.sent,
+                      "account": a.account, "test_case_id": a.test_case_id, "latency_ms": a.latency_ms,
+                      "waited_ms": a.waited_ms,
+                      "request_headers": json.loads(a.request_headers_json) if a.request_headers_json else {},
+                      "request_body": a.request_body} for a in rows],
+        }
+
+
+def _decide(scan_id: int, test_id: int, approve: bool):
+    with SessionLocal() as db:
+        t = db.get(TestCase, test_id)
+        if t is None or t.scan_id != scan_id:
+            raise HTTPException(status_code=404, detail="Test not found in this scan")
+        run = db.get(ScanRun, scan_id)
+        if run.status not in ("queued", "running") or run.halted_at is not None:
+            raise HTTPException(status_code=409, detail=f"Scan is {run.status}; decisions are closed")
+        if t.status != "pending_approval":
+            raise HTTPException(status_code=409, detail=f"Test is {t.status}, not waiting for approval")
+        ep = db.get(ApiEndpoint, t.endpoint_id)
+        t.status, t.decided_at = ("approved" if approve else "denied"), now()
+        verb = "approved" if approve else "denied"
+        db.add(AuditLog(scan_id=scan_id, stage="safety_gateway", method=ep.method if ep else "-",
+                        url=ep.path if ep else "-", decision="allow" if approve else "block",
+                        test_case_id=t.id, sent=False, sent_at=now(),
+                        reason=f"high-risk test #{t.id} ({t.test_type}) {verb} by a human on the dashboard"
+                               + ("; may run in execution (nothing sent now)" if approve else "; dropped, will never run")))
+        db.add(AgentLog(scan_id=scan_id, stage="safety_gateway", level="info" if approve else "warn",
+                        message=f"test #{t.id} {t.test_type} {verb} by a human on the dashboard"))
+        db.commit()
+        return {"id": t.id, "status": t.status}
+
+
+@app.post("/scans/{scan_id}/tests/{test_id}/approve")
+def approve_test(scan_id: int, test_id: int):
+    return _decide(scan_id, test_id, True)
+
+
+@app.post("/scans/{scan_id}/tests/{test_id}/deny")
+def deny_test(scan_id: int, test_id: int):
+    return _decide(scan_id, test_id, False)
+
+
+@app.post("/scans/{scan_id}/kill")
+def kill_scan(scan_id: int):
+    with SessionLocal() as db:
+        run = db.get(ScanRun, scan_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="Scan not found")
+        if run.status not in ("queued", "running"):
+            raise HTTPException(status_code=409, detail=f"Scan is {run.status}; nothing to stop")
+    gateway.halt(scan_id, "human", "kill switch pressed on the dashboard")
+    return {"scan_id": scan_id, "halted": True}

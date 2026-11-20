@@ -2,7 +2,10 @@
 
 Phase 1: every stage is a stub. Phase 2: recon is real (see service/recon).
 Phase 3: inventory is real (see service/inventory).
-Phase 4: attack_planning is real (see service/planner); it plans, never executes. The shared wrapper (`run_stage`) does the
+Phase 4: attack_planning is real (see service/planner); it plans, never executes.
+Phase 5: safety_gateway is real (see service/gateway/stage.py): gate self-test + approval queue.
+Phase 6: execution is real (see service/executor): runs cleared/approved tests, records raw results.
+The gate itself runs inside the shared HTTP client for every stage. The shared wrapper (`run_stage`) does the
 bookkeeping: mark the stage running, log "entered <stage>", wait briefly so
 a human can watch, mark it done, and save the scan's state. The per-stage
 functions return only what that stage changes; for now that is nothing,
@@ -18,7 +21,10 @@ from sqlalchemy import select
 
 from ..config import STUB_STAGE_DELAY_SECONDS
 from ..db import AgentLog, ScanRun, ScanStage, SessionLocal, now
+from ..gateway import halted_reason
+from ..gateway.stage import ScanHalted, run_safety
 from ..inventory import classify
+from ..executor import run_execution
 from ..planner import run_planning
 from ..recon import run_recon
 from .state import ScanState
@@ -81,11 +87,15 @@ def attack_planning(state: ScanState) -> dict:
 
 
 def safety_gateway(state: ScanState) -> dict:
-    return {}
+    scan_id = state["scan_id"]
+    counts = run_safety(scan_id, lambda msg, level="info": log(scan_id, "safety_gateway", msg, level))
+    return {"safety": counts}
 
 
 def execution(state: ScanState) -> dict:
-    return {}
+    scan_id = state["scan_id"]
+    counts = run_execution(scan_id, lambda msg, level="info": log(scan_id, "execution", msg, level))
+    return {"execution": counts}
 
 
 def verification(state: ScanState) -> dict:
@@ -127,15 +137,21 @@ def run_stage(stage: str) -> Callable[[ScanState], dict]:
 
     def node(state: ScanState) -> dict:
         scan_id = state["scan_id"]
+        h = halted_reason(scan_id)
+        if h:   # kill switch: no further stage starts
+            raise ScanHalted(h)
         _set_stage(scan_id, stage, "running")
         log(scan_id, stage, f"entered {stage}")
         try:
             if STUB_STAGE_DELAY_SECONDS:
                 time.sleep(STUB_STAGE_DELAY_SECONDS)
             update = body(state)
-        except Exception as exc:  # mark the stage failed, then let the runner fail the scan
-            _set_stage(scan_id, stage, "failed")
-            log(scan_id, stage, f"{stage} failed: {exc}", level="error")
+        except Exception as exc:  # mark the stage failed (or halted), then let the runner end the scan
+            h = halted_reason(scan_id)
+            _set_stage(scan_id, stage, "halted" if h else "failed")
+            log(scan_id, stage, f"{stage} halted: {h}" if h else f"{stage} failed: {exc}", level="error")
+            if h:
+                raise ScanHalted(h) from exc
             raise
         update = {**update, "stage_history": [stage]}
         _set_stage(scan_id, stage, "done")

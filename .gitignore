@@ -9,3 +9,4 @@ scanner/data/*.db
 scanner/data/*.db-*
 .env
 .env.*
+scanner/data/flaky_mode

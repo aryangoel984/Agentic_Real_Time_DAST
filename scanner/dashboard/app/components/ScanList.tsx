@@ -39,7 +39,7 @@ export default function ScanList({ scans, selected, onSelect }: {
                   <div className="mt-2 flex items-center gap-2">
                     <div className="h-1 flex-1 overflow-hidden rounded-full bg-slate-100">
                       <div
-                        className={`h-full rounded-full ${s.status === "failed" ? "bg-red-500" : s.status === "completed" ? "bg-emerald-500" : "bg-blue-500"}`}
+                        className={`h-full rounded-full ${["failed", "killed", "stopped"].includes(s.status) ? "bg-red-500" : s.status === "completed" ? "bg-emerald-500" : "bg-blue-500"}`}
                         style={{ width: `${pct}%` }}
                       />
                     </div>

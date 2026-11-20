@@ -3,8 +3,8 @@
 A headless Chromium browser (Playwright) clicks through the real flows. Every
 request the browser makes is intercepted and sent through the shared
 TargetClient instead of going out directly, so browser traffic passes the same
-choke point (scope check + audit log) as everything else. Requests to any other
-host are aborted.
+choke point (the safety gateway + audit log) as everything else. Requests to
+any other host are blocked there and never leave the scanner.
 
 Safe values: Pay is submitted for a booking that is already paid (the server
 refuses with 409) and Refund asks for more than was paid (refused with 400), so
@@ -19,12 +19,15 @@ from urllib.parse import parse_qs, urlsplit
 
 from playwright.sync_api import sync_playwright
 
-from ..config import CRAWL_HEADED
+from .. import gateway
+from ..config import CRAWL_HEADED, HEALTH_MAX_PAUSE_SECONDS
+from ..gateway import GatewayBlocked
 
 _SKIP_REQUEST_HEADERS = {"host", "content-length", "accept-encoding", "connection"}
 _SKIP_RESPONSE_HEADERS = {"content-encoding", "content-length", "transfer-encoding", "connection",
                           "keep-alive"}
-TIMEOUT_MS = 30_000
+# Long enough to sit out a health-monitor pause (requests are held, not dropped).
+TIMEOUT_MS = int((HEALTH_MAX_PAUSE_SECONDS + 30) * 1000)
 OVER_REFUND_AMOUNT = "99999999"
 
 
@@ -81,6 +84,9 @@ def _crawl_role(browser, client, acct: dict) -> RoleResult:
         """Name the step in any error, plus the last API call the browser made."""
         try:
             yield
+            h = gateway.halted_reason(client.scan_id)
+            if h:
+                raise CrawlError(f"crawl {acct['label']} stopped after step '{name}': {h}")
         except CrawlError:
             raise
         except Exception as exc:
@@ -91,14 +97,18 @@ def _crawl_role(browser, client, acct: dict) -> RoleResult:
 
     def handle(route):
         req = route.request
-        if not client.in_scope(req.url):
-            route.abort()
-            return
+        # No local scope check here: off-scope requests also go to the gateway, which
+        # blocks them and records the block in the audit log.
         headers = {k: v for k, v in req.all_headers().items()
                    if not k.startswith(":") and k.lower() not in _SKIP_REQUEST_HEADERS}
         body = req.post_data_buffer
         try:
             resp = client.send(req.method, req.url, headers=headers, content=body)
+        except GatewayBlocked as exc:
+            # Refused by the safety gateway: nothing reached the target. Answer the browser
+            # locally so the flow fails fast instead of waiting for a response that never comes.
+            route.fulfill(status=599, body=f"blocked by the scanner's safety gateway: {exc.reason}")
+            return
         except Exception:
             route.abort()
             return

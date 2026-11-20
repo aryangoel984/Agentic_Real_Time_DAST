@@ -12,6 +12,7 @@ from langgraph.graph import END, START, StateGraph
 
 from ..config import MAX_RETEST_ROUNDS, STAGES
 from ..db import ScanRun, SessionLocal, now
+from ..gateway import halted_reason
 from .stages import log, run_stage
 from .state import ScanState
 
@@ -53,14 +54,20 @@ def run_scan(scan_id: int, event: dict) -> None:
         status, error = "completed", None
     except Exception as exc:
         final, status, error = None, "failed", str(exc)
+        if halted_reason(scan_id):   # stopped by the kill switch or the health monitor
+            with SessionLocal() as db:
+                by = db.get(ScanRun, scan_id).halted_by
+            status, error = ("killed" if by == "human" else "stopped"), halted_reason(scan_id)
 
     with SessionLocal() as db:
         run = db.get(ScanRun, scan_id)
+        run.paused_reason = None
         run.status = status
         run.error = error
         run.finished_at = now()
-        if status == "completed":
+        if status in ("completed", "killed", "stopped"):
             run.current_stage = None
+        if final is not None:
             run.state_json = json.dumps(final, default=str)
         db.commit()
     log(scan_id, None, f"scan {status}" + (f": {error}" if error else ""),

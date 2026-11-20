@@ -16,7 +16,7 @@ function Dot({ status }: { status: string }) {
         <span className="h-3 w-3 rounded-full bg-blue-600" />
       </span>
     );
-  if (status === "failed")
+  if (status === "failed" || status === "halted")
     return <span className="flex h-6 w-6 items-center justify-center rounded-full bg-red-500 text-xs font-bold text-white">!</span>;
   if (status === "interrupted")
     return <span className="flex h-6 w-6 items-center justify-center rounded-full bg-amber-400 text-xs font-bold text-white">–</span>;

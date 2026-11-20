@@ -18,6 +18,9 @@ export type ScanSummary = {
   started_at: string | null;
   finished_at: string | null;
   error: string | null;
+  paused_reason: string | null;
+  halted_by: string | null;
+  halt_reason: string | null;
   stages_done: number;
   stages_total: number;
   trigger: Trigger | null;
@@ -63,6 +66,17 @@ export type TestCase = {
   requires_approval: boolean;
   planned_by: string;
   status: string;
+  exec_status: "ran" | "skipped" | "could_not_run" | null;
+  raw_result: "suspicious" | "clean" | null;
+  result_summary: string | null;
+  executed_at: string | null;
+  evidence: EvidenceItem[];
+};
+
+export type EvidenceItem = {
+  request: { as: string; method: string; path: string; headers: Record<string, string>; body: unknown } | null;
+  response: { status: number; key_fields: unknown } | null;
+  note: string | null;
 };
 
 export type PlanSummary = {
@@ -85,7 +99,40 @@ export type ScanDetail = ScanSummary & {
   state: { plan?: PlanSummary } | null;
 };
 
+export type AuditRow = {
+  id: number;
+  at: string | null;
+  stage: string | null;
+  method: string;
+  url: string;
+  decision: "allow" | "block" | "hold";
+  reason: string | null;
+  status: number | null;
+  sent: boolean;
+  account: string | null;
+  test_case_id: number | null;
+  latency_ms: number | null;
+  waited_ms: number | null;
+  request_headers: Record<string, string>;
+  request_body: string | null;
+};
+
+export type AuditView = {
+  summary: {
+    allowed: number; held: number; blocked: number; sent: number;
+    rate_cap: number; max_per_second: number;
+    paused_reason: string | null; halted_by: string | null; halt_reason: string | null; status: string;
+  };
+  rows: AuditRow[];
+};
+
 const BASE = "/scanner-api";
+
+export async function postJson<T>(path: string): Promise<T> {
+  const res = await fetch(BASE + path, { method: "POST" });
+  if (!res.ok) throw new Error(`${res.status}: ${(await res.json().catch(() => ({}))).detail ?? ""}`);
+  return res.json() as Promise<T>;
+}
 
 export async function fetchJson<T>(path: string): Promise<T> {
   const res = await fetch(BASE + path, { cache: "no-store" });

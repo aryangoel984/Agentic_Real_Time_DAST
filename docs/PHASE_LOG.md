@@ -552,3 +552,287 @@ That's 11 tests across 8 APIs. **0 requests were sent to the target during plann
    - Fire a scan. The card says "Planned by Groq LLM (openai/gpt-oss-120b)" and the reasons are the AI's own wording.
    - Any suggestions outside the catalogue appear as amber "dropped" lines in the log and at the bottom of the card.
 4. **Guard proof without a key:** run `check_plan_validation.py`, as shown above.
+
+## Phase 5 — The safety gateway (one checkpoint every request must pass)
+
+### What it is and why
+
+From Phase 6 on, the scanner will send real attack requests to the target, some of which try to move money. Before that is allowed, there has to be one place that decides, for **every single request**, whether it may go out. That place is the **safety gateway**. It is worth 20% of the judging, and a scanner that hits the wrong host, uses real accounts or floods the platform would be disqualified, so it is enforced in code, not left to each agent to remember.
+
+### Why it is a single choke point
+
+Only one piece of scanner code is able to send anything to the target: `TargetClient.send` in `scanner/service/target_client.py`.
+
+- **No other module can open a connection.** No other scanner file imports an HTTP library. The check script tests this.
+- **The crawler's browser can't go around it either.** Every request the browser makes is intercepted and handed to `send`. Off-host requests go there too, and are blocked and recorded.
+- **Future agents use the same door.** The Phase 6 attack executor will call the same `send`, so it inherits every check automatically.
+- **The gateway runs inside `send`.** It cannot be skipped, because there is no other way to reach the target. The one line that actually puts bytes on the wire comes after all the checks.
+
+### The checks, in order
+
+The first check that says no decides the outcome. Every outcome is written to the audit log.
+
+1. **Kill switch.** If someone pressed the kill switch (or the health monitor gave up), the request is **blocked** and nothing is sent.
+2. **Scope.** The request must go to the portal's host only, using GET, POST, HEAD or OPTIONS. DELETE, PUT and PATCH are never needed, so they are refused. Paths listed under `excluded_paths` in `scanner/target_profile.json` are refused as well. Anything else is **blocked**, with the reason.
+3. **Credentials.** Only the four test accounts in `target_profile.json` may be used.
+   - A login attempt for any other username is **blocked**.
+   - A login token is accepted only if the gateway itself saw the target issue it to one of those accounts during this scan. A forged or borrowed token is **blocked**.
+   - Every allowed request records which test account it used.
+4. **High-risk approval.** A request that belongs to a high-risk test (duplicate refund, price tampering) is **blocked** unless a human has approved that test. This is the code-level lock for Phase 6.
+5. **Health monitor.** After every response the gateway notes the status and how long it took. It **pauses** the scan when the target looks unwell:
+   - the target answers 503 or refuses the connection (it is down right now), or
+   - 3 errors arrive in a row, or
+   - at least half of the last 10 answers are errors, or
+   - the middle (median) response time of the last 10 answers is 2 seconds or more.
+
+   While paused, new requests are **held**: they wait and are not dropped. The gateway checks the portal's home page every 5 seconds and **resumes** as soon as it answers quickly and without error.
+
+   A request the target did not process (503 or refused) is sent again after recovery, as are failed reads. Other failed writes are never repeated. If the target is still unwell after 120 seconds, the scan is **stopped safely** instead of waiting forever.
+6. **Rate limit.** At most **5 requests per second** per scan. Extra requests wait their turn; they are queued, not dropped. The wait is recorded on each request.
+
+**Audit log.** Every decision becomes one row in `audit_logs`, recording:
+- the scan and the stage
+- method and URL
+- the decision (allowed, blocked or held) and the reason
+- whether the request was actually sent, and the response status
+- response time and how long it waited
+- the test account used and the test case, if any
+
+Passwords, tokens, the Authorization header and cookies are masked (`***`) before saving.
+
+### The safety_gateway pipeline stage
+
+The gate guards every stage from the first request onwards. The pipeline's own **Safety gateway** stage, which used to be a placeholder, now does two jobs:
+
+1. **Self-test.** It pushes five deliberately bad requests through the real gate:
+   - a request to another website (`example.com`)
+   - a DELETE request
+   - a login as an account that isn't a test account
+   - a forged token
+   - an unapproved high-risk refund test
+
+   These run in **dry-run mode**: even if the gate let one through, it would not be sent. All five must be blocked. If any is not, the scan stops before any test can run. This is also how you see a blocked out-of-scope request on every scan.
+2. **Approval queue.**
+   - Low- and medium-risk tests are marked **cleared**.
+   - High-risk tests are marked **waiting** and the pipeline stops here until a human decides each one on the dashboard.
+   - **Approve** marks the test *approved*, which means it may run in Phase 6.
+   - **Deny** marks it *denied*: it is dropped and will never run.
+   - A test nobody decides within 15 minutes is denied automatically, so doing nothing is the safe choice.
+   - Each waiting test and each decision is also an audit row. These rows are marked "not sent", because a decision is not a request.
+
+### Dashboard: the Safety gateway card
+
+A new card sits under the Attack plan:
+
+- **Status line.** It shows one of:
+  - Running
+  - Waiting for your decision
+  - Paused (with the reason)
+  - Killed / Stopped (with the reason)
+
+  It also shows the counts: sent to target, allowed, held (amber), blocked (red). The rate figure is "highest N in any 1 s (cap 5/s)", computed from the recorded send times.
+- **Kill switch.** A red button with a confirm step. It blocks every further request for that scan immediately, and the scan ends as **killed**.
+- **High-risk tests.** Each one has Approve and Deny buttons, then shows its result.
+- **Audit log.** A live table, newest first, with All / Blocked / Held / Sent filters. Clicking a row shows the request exactly as recorded, with secrets masked.
+
+### Simulating a failing target
+
+`scanner/scripts/flaky_proxy.py` is a tiny stand-in for a struggling target. It sits on port 3099 in front of the portal (3000) and forwards everything. You switch it between three modes from another terminal:
+- `ok` forwards normally
+- `slow` adds a 4-second delay
+- `fail` answers 503
+
+Start the scanner with `TARGET_URL=http://localhost:3099` and the scanner treats the proxy as the target. The target's code is not changed.
+
+The proxy also counts every request it receives. That count is a second, independent proof that nothing goes around the gateway: it should equal "Sent to target" on the dashboard.
+
+### How it was tested
+
+- **`scanner/scripts/check_gateway.py`: 23 of 23 checks passed.** It needs no target, because it uses a throwaway database and a fake in-memory target. It covers:
+  - the no-bypass code checks
+  - off-scope, DELETE and excluded paths
+  - an unlisted account, a forged token, and a real account's token being accepted and attributed
+  - an unapproved test blocked, then allowed after approval
+  - 20 requests taking at least 3.8 s, with never more than 5 in any second
+  - pause after 3 errors, the request held, then resumed
+  - a 503 pausing at once and the request re-sent after recovery
+  - the kill switch blocking with nothing sent
+  - no password or token in any audit row
+- **Full scans through the proxy** (6 runs):
+  - **Normal scan.** Recon still found the same 8 endpoints.
+    - All 5 self-test requests were blocked.
+    - 3 high-risk tests waited until they were decided on the dashboard: 2 approved, 1 denied. The scan then finished.
+    - The highest rate was 5 in any 1 second.
+  - **Slow mode during recon.** The scan paused with "median latency 2.1 s over the last 10 responses". Switching back to `ok` resumed it within 5 seconds, and recon finished normally.
+  - **Fail mode during recon.** The scan paused with "target unavailable (HTTP 503)". After switching back to `ok`, the held request was re-sent and recon finished with all 8 endpoints.
+  - **Kill switch during recon.** The next request was blocked with "kill switch", and the scan ended as **killed** within about a second.
+  - **Kill switch while waiting for approvals.** The scan ended as **killed**, and the remaining tests can no longer be approved.
+  - **Request counts.** The proxy's own count equalled "Sent to target" in every scan checked (111 = 111 and 10 = 10).
+  - **Masking.** Every audit row showed passwords and tokens as `***`.
+
+### Key decisions and why
+
+- **Hold instead of drop.** Requests held for health or rate reasons wait their turn rather than fail. A short hiccup on the target then doesn't ruin a scan, and the scanner backs off instead of hammering.
+- **Fail closed.** The self-test stops the scan if the gate is broken. An undecided high-risk test is denied. A target that stays down stops the scan.
+- **Credentials are tied to tokens the gateway saw being issued.** Matching a username alone would not stop a token copied from somewhere else.
+- **Retries only where they are safe.** A 503 or refused connection means the target did not process the request, so it is safe to send again. Reads are always safe to repeat. A write that failed in any other way is never repeated, because it might already have changed something.
+
+### Limitations
+
+- **Gateway state lives in the scanner's memory.** This covers tokens, pause state and the rate limit, while kill and pause flags are also saved to the database. Restarting the scanner mid-scan marks the scan interrupted (as before).
+- **The rate limit is per scan.** Two scans running at once could together reach twice the cap.
+- **A request already on the wire can't be recalled.** The kill switch stops everything after it, not a request that has already left.
+- **A failed write isn't repeated.** If the target breaks in the middle of a non-503 write, the crawl step fails and the scan fails safely with a named step.
+- **Approval is per test, not per individual request.** Phase 6 will send each approved test's requests tagged with the test, and the gate re-checks the approval on every one.
+- **Recon is slower.** Because of the rate limit it now takes about 25–35 seconds instead of 11–16.
+- **New columns again.** `scanner/data/scanner.db` must be deleted once after upgrading.
+
+### How to see it working
+
+See the step-by-step check in the project README ("Run the scanner"). The short version:
+
+1. Run `scanner/.venv/bin/python scanner/scripts/check_gateway.py`. It should end with "23/23 checks passed".
+2. Fire a scan and open its **Safety gateway** card.
+   - You should see 5 red self-test blocks and the rate at 5/s or less.
+   - The scan waits at Safety gateway. Approve or deny each high-risk test to let it continue.
+3. To see the health monitor, run the proxy and start the scanner with `TARGET_URL=http://localhost:3099`. Switch the proxy to `slow` or `fail` during recon, then back to `ok`.
+4. To see the kill switch, press it during recon.
+
+## Phase 6 — The execution agents (run the approved tests, record raw results)
+
+### What it is and why
+
+Until Phase 5 the scanner only *decided* what to test. In this phase the **Execution** stage actually sends each cleared or approved test to the target and writes down what came back.
+
+It records a **raw result** only: **suspicious** or **clean**, plus a little evidence. It does **not** call anything a vulnerability and does **not** give it a severity. One response can mislead, for example a 200 with an empty or harmless body. Phase 7 (verification) re-checks every suspicious result before anything counts as a finding, which protects precision. Phase 8 (triage) decides how serious each one is.
+
+### Ground truth: the scanner makes its own test data
+
+Before testing, the scanner signs in with the 4 test accounts. Then, for each test that needs one, it **creates its own synthetic booking** for agency A, with:
+- customer "DAST Synthetic Customer"
+- email `dast+synthetic@example.test`
+- price ₹25,000
+
+Because the scanner created that booking itself, it knows exactly who owns it, what it costs, and whether it has been paid or refunded. Each result is then a plain comparison between what the target returned and what a secure system must return.
+
+There are two further benefits:
+- The evidence never contains the seeded customers' personal details.
+- The tests never change the platform's existing bookings.
+
+In every cross-agency test, the "attacker" is an admin from the other agency (**B-admin**) and the "victim" is agency A's synthetic data.
+
+### What each executor does
+
+These are plain code with no AI involved. Each one uses the field names recon recorded for the endpoint.
+
+| Test | What it sends | Suspicious if | Clean if |
+|---|---|---|---|
+| Cross-agency access, read by ID | B-admin reads A's synthetic booking, or A-admin's user record | 200 with agency A's data | 403 / 404 |
+| Cross-agency access, payment | B-admin pays A's synthetic booking | accepted | refused |
+| Cross-agency access, create booking | B-admin creates a booking for agency A | created | 403 |
+| Zombie ownership check | B-admin reads A's synthetic booking on the old `/api/v1/...` path | 200 with agency A's data | 401 / 403 / 404 / 410 |
+| Missing authentication | the endpoint with **no login at all** | 200 with data | 401 / 403 |
+| Duplicate refund | A-admin creates a booking, pays it in full, refunds it once (legitimate), then refunds it again | the second refund is accepted | the second refund is refused |
+| Amount validation, payment (price tampering) | A-admin pays a ₹25,000 synthetic booking with ₹1 | marked paid | refused |
+| Amount validation, refund | refund ₹50,000 on a booking that paid ₹25,000 | accepted | refused |
+| Role authorization | A-subagent (not an admin) tries to refund A's paid synthetic booking | allowed | 403 |
+| Weak authentication | 3 common passwords (`password`, `123456`, `admin123`) against each test account | any of them signs in | none do |
+
+The weak-password test also notes that the login page did not slow down or lock an account after wrong passwords. It records this as a **note, not a suspicious result**: it isn't one of the things we set out to find, and flagging it would hurt precision.
+
+**Tests that aren't run normally:**
+- **Denied (or never approved) at the safety gateway:** marked **skipped**. None of its requests are sent, not even its setup.
+- **No recipe for that endpoint** (for example cross-agency access on search, which has no per-agency record): marked **skipped**, with the reason.
+- **Setup fails, or the answer is neither the vulnerable nor the secure one:** marked **could not run**, with the reason. A result is never guessed.
+
+### Every request still goes through the safety gateway
+
+- **Same door as everything else.** Every request, including the setup of creating and paying a synthetic booking, goes through the same `TargetClient.send`.
+- **Tagged with its test.** Each request carries the id of its test, so the gateway re-checks that test's approval on every single request. A denied money test cannot even create its booking.
+- **Logins use only the 4 test accounts**, as before.
+- **The weak-password guesses are allowed** because they use the provided test usernames. The passwords are masked in the audit log.
+
+### What is stored
+
+- **`test_cases`** gains a run status (`ran` / `skipped` / `could_not_run`), the raw result, a one-line summary and the time it ran. The approval history (`cleared` / `approved` / `denied`) is kept separately and unchanged.
+- **`evidence`** stores one or two exchanges per test. Each has the masked request (who sent it, method, path, `Authorization: Bearer ***`, body) and **only the key fields** of the response, such as `agency_id`, `payment_status` or `total_refunded`. Lists are shown only as counts, never their contents.
+- **No `vulnerabilities` rows and no severity** are written.
+
+### Dashboard: the Execution card
+
+A new card sits under the Safety gateway card:
+- **Top line:** "5 suspicious · 6 clean · 0 skipped".
+- **One row per test:** "ran" or "not run", the result (suspicious in amber, clean in green, skipped in grey) and the one-line summary.
+- **Evidence:** click a row to see its masked request and the key response fields.
+- **Footer:** these are raw results, not confirmed findings.
+
+### What changes on the target
+
+A scan adds, in agency A:
+- about 7 synthetic bookings
+- their payments and refunds
+- new login tokens
+
+If a cross-agency booking creation ever succeeded, it would add one more booking. `cd backend && python seed.py` wipes and rebuilds the target database, which removes all of it. Tested: after a scan the target had 19 bookings, 9 payments and 3 refunds. After `seed.py` it was back to 8, 5 and 1, with 0 synthetic bookings.
+
+### How it was tested
+
+**Scan 1, rule-based plan, all money tests approved.** Result: **5 suspicious, 6 clean, 0 skipped.**
+
+| Result | Test | What came back |
+|---|---|---|
+| Suspicious | Cross-agency read | B-admin read A's synthetic booking: 200 with agency_id 1 |
+| Suspicious | Duplicate refund | second refund 200; total refunded ₹50,000 on ₹25,000 paid |
+| Suspicious | Price tampering | ₹25,000 booking marked paid for ₹1 |
+| Suspicious | Zombie v1 | returned A's synthetic booking to B-admin |
+| Suspicious | Shadow partner-details | 200 with data and no login |
+| Clean | Over-refund | 400 |
+| Clean | Sub-agent refund | 403 |
+| Clean | Cross-agency payment | 404 |
+| Clean | Cross-agency booking creation | 403 |
+| Clean | Cross-agency user lookup | 404 |
+| Clean | Weak passwords | 0 of 12 guesses worked |
+
+The 5 suspicious results are exactly the 5 planted bugs. The 6 clean ones are true negatives that later phases can rely on.
+
+**Scan 2, price tampering denied on the dashboard.** That test showed **skipped**. The audit log has no sent request tagged with it; it has only its hold, its denial, and the self-test block.
+
+**Checks across both scans:**
+- **Everything went through the gateway.** All 37 execution requests were allowed by it.
+- **Nothing went around it.** The proxy's own count matched "Sent to target" exactly: 143 = 143.
+- **No secrets were stored.** No password or token appears anywhere in the audit log.
+- **Nothing was confirmed or graded.** The Findings card stayed empty, and the words "confirmed" and "severity" appear nowhere in the results.
+- **The speed limit held.** The highest rate was 5 in any second.
+
+**A rate-limit precision bug was found and fixed.** One earlier 1-second window held 6 requests: a database lookup between taking the speed-limit slot and actually sending let two requests drift 0.16 s apart. The slot is now taken immediately before sending. The gateway check script still passes 23/23.
+
+### Key decisions and why
+
+- **Synthetic bookings instead of the seeded ones.** This gives exact ground truth, no real-looking personal data in evidence, and no damage to existing records.
+- **Each test makes its own booking.** Tests can't affect each other's results; for example, the duplicate refund test doesn't reuse a booking another test already refunded.
+- **"Could not run" is a separate outcome.** An unexpected answer is not quietly counted as clean. That would hide problems and make the true negatives untrustworthy.
+- **No lockout is not flagged.** It's a real weakness, but outside our test plan. It is recorded as a note so triage can decide later.
+
+### Limitations
+
+- **The executors know this platform's shape.** They rely on recon's field names and on simple path hints (a "booking" or "user" in the path). A very different API would need new recipes.
+- **A cross-agency write that succeeds actually happens.** On a vulnerable target it really pays or creates the record, only ever on synthetic data. `seed.py` undoes it.
+- **One attacker/victim pair.** B-admin attacks agency A; the reverse direction isn't tested separately.
+- **Raw results only.** A single response decides suspicious or clean. Repeat checks and false-positive rejection are Phase 7's job.
+
+### How to run it
+
+1. Stop the scanner API.
+2. Delete its database once, because new columns were added:
+   ```bash
+   rm -f scanner/data/scanner.db scanner/data/scanner.db-wal scanner/data/scanner.db-shm
+   ```
+3. Reset the target:
+   ```bash
+   cd backend && python seed.py
+   ```
+4. Start everything as usual and fire a scan.
+5. Approve the money tests in the Safety gateway card. The **Execution** card fills in with 5 suspicious and 6 clean.
+6. Click any row to see its evidence.
+7. Deny a money test in a second scan to see it skipped.
+8. Run `python seed.py` afterwards to remove the synthetic bookings.

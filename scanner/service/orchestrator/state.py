@@ -12,3 +12,5 @@ class ScanState(TypedDict, total=False):
     endpoint_count: int                                # endpoints recon put in the API inventory
     classification: dict                               # {active, zombie, shadow} counts from inventory
     plan: dict                                         # attack planner summary: planner, model, counts, dropped, skips
+    safety: dict                                       # safety gateway: {cleared, approved, denied} test counts
+    execution: dict                                    # raw results: {suspicious, clean, skipped, could_not_run}

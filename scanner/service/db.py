@@ -61,6 +61,11 @@ class ScanRun(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Safety gateway (Phase 5)
+    paused_reason: Mapped[str | None] = mapped_column(Text, nullable=True)     # set while the health monitor holds traffic
+    halted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # kill switch / safe stop
+    halted_by: Mapped[str | None] = mapped_column(String(20), nullable=True)   # human / health_monitor
+    halt_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class DeploymentEvent(Base):
@@ -134,7 +139,13 @@ class TestCase(Base):
     role_used: Mapped[str | None] = mapped_column(String(50), nullable=True)
     risk_level: Mapped[str | None] = mapped_column(String(20), nullable=True)
     requires_approval: Mapped[bool] = mapped_column(Boolean, default=False)
-    status: Mapped[str] = mapped_column(String(20), default="planned")            # planned/approved/blocked/run/skipped
+    status: Mapped[str] = mapped_column(String(20), default="planned")            # planned/cleared/pending_approval/approved/denied/...
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # when a human approved/denied it
+    # Execution (Phase 6): raw outcome only; confirmation and severity come later
+    exec_status: Mapped[str | None] = mapped_column(String(20), nullable=True)   # ran / skipped / could_not_run
+    raw_result: Mapped[str | None] = mapped_column(String(20), nullable=True)    # suspicious / clean
+    result_summary: Mapped[str | None] = mapped_column(Text, nullable=True)      # one plain-English line
+    executed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 
@@ -159,7 +170,8 @@ class Vulnerability(Base):
 class Evidence(Base):
     __tablename__ = "evidence"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    vulnerability_id: Mapped[int] = mapped_column(ForeignKey("vulnerabilities.id"), index=True)
+    vulnerability_id: Mapped[int | None] = mapped_column(ForeignKey("vulnerabilities.id"), nullable=True, index=True)
+    test_case_id: Mapped[int | None] = mapped_column(ForeignKey("test_cases.id"), nullable=True, index=True)
     request_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     response_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -186,8 +198,13 @@ class AuditLog(Base):
     request_headers_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     request_body: Mapped[str | None] = mapped_column(Text, nullable=True)
     response_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    allowed: Mapped[bool] = mapped_column(Boolean, default=True)                  # safety layer decision
-    block_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    decision: Mapped[str] = mapped_column(String(10), default="allow")            # allow / block / hold
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sent: Mapped[bool] = mapped_column(Boolean, default=False)                    # did a request actually go out
+    account: Mapped[str | None] = mapped_column(String(50), nullable=True)        # test account label used
+    test_case_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    waited_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)         # rate-limit / pause wait
     sent_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 
