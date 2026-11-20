@@ -48,6 +48,17 @@ export type Finding = {
   verification_reason: string | null;
   checks: { name: string; passed: boolean | null; detail: string }[];
   evidence: EvidenceItem[];
+  duplicate_of: number | null;
+  rank: number | null;
+  severity_score: number | null;
+  severity_reason: string | null;
+  business_impact: string | null;
+  owner: string | null;
+  owner_source: string | null;
+  first_seen_scan_id: number | null;
+  review_status: "awaiting_review" | "confirmed" | "changed" | "not_needed" | null;
+  review_note: string | null;
+  reviewed_at: string | null;
 };
 
 export type Endpoint = {
@@ -139,8 +150,9 @@ export type AuditView = {
 
 const BASE = "/scanner-api";
 
-export async function postJson<T>(path: string): Promise<T> {
-  const res = await fetch(BASE + path, { method: "POST" });
+export async function postJson<T>(path: string, body?: unknown): Promise<T> {
+  const res = await fetch(BASE + path, body === undefined ? { method: "POST" }
+    : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
   if (!res.ok) throw new Error(`${res.status}: ${(await res.json().catch(() => ({}))).detail ?? ""}`);
   return res.json() as Promise<T>;
 }

@@ -6,6 +6,7 @@
 - GET  /scans/{id}/audit : safety gateway decisions (audit log, masked) and a safety summary
 - POST /scans/{id}/tests/{tid}/approve | deny : human decision on a high-risk test
 - POST /scans/{id}/kill : kill switch, halts every outgoing request for the scan
+- POST /scans/{id}/findings/{fid}/review : human review of a critical/high finding (confirm or change severity)
 
 This service is independent of the target platform. It has its own database
 and never imports the target's code or opens the target's database.
@@ -165,6 +166,11 @@ def get_scan(scan_id: int):
             "findings": [{"id": v.id, "title": v.title, "severity": v.severity, "status": v.status,
                           "test_case_id": v.test_case_id, "endpoint_id": v.endpoint_id, "vuln_class": v.vuln_class,
                           "verification_reason": v.verification_reason,
+                          "duplicate_of": v.duplicate_of, "rank": v.rank, "severity_score": v.severity_score,
+                          "severity_reason": v.severity_reason, "business_impact": v.business_impact,
+                          "owner": v.owner, "owner_source": v.owner_source,
+                          "first_seen_scan_id": v.first_seen_scan_id, "review_status": v.review_status,
+                          "review_note": v.review_note, "reviewed_at": _iso(v.reviewed_at),
                           "checks": json.loads(v.checks_json) if v.checks_json else [],
                           "evidence": [{"request": json.loads(x.request_json) if x.request_json else None,
                                         "response": json.loads(x.response_json) if x.response_json else None,
@@ -244,6 +250,53 @@ def approve_test(scan_id: int, test_id: int):
 @app.post("/scans/{scan_id}/tests/{test_id}/deny")
 def deny_test(scan_id: int, test_id: int):
     return _decide(scan_id, test_id, False)
+
+
+# ---------------- triage review (Phase 8) ----------------
+
+class ReviewIn(BaseModel):
+    action: str = Field(pattern="^(confirm|change)$")
+    severity: str | None = Field(default=None, pattern="^(critical|high|medium|low)$")
+    note: str | None = Field(default=None, max_length=500)
+
+
+@app.post("/scans/{scan_id}/findings/{finding_id}/review")
+def review_finding(scan_id: int, finding_id: int, body: ReviewIn):
+    with SessionLocal() as db:
+        v = db.get(Vulnerability, finding_id)
+        if v is None or v.scan_id != scan_id:
+            raise HTTPException(status_code=404, detail="Finding not found in this scan")
+        if v.status != "verified" or v.duplicate_of is not None:
+            raise HTTPException(status_code=409, detail="Only verified, ranked findings can be reviewed")
+        if v.review_status != "awaiting_review":
+            raise HTTPException(status_code=409, detail=f"Finding is {v.review_status or 'not triaged'}, not awaiting review")
+        note = (body.note or "").strip()
+        if body.action == "change":
+            if not body.severity or body.severity == v.severity:
+                raise HTTPException(status_code=422, detail="Pick a different severity")
+            if not note:
+                raise HTTPException(status_code=422, detail="Give a reason for changing the severity")
+            what = f"severity changed from {v.severity} to {body.severity}"
+            v.severity_reason = f"{v.severity_reason} · reviewer changed it to {body.severity}: {note}"
+            v.severity, v.review_status = body.severity, "changed"
+            ranked = db.scalars(select(Vulnerability).where(Vulnerability.scan_id == scan_id,
+                                                            Vulnerability.rank.is_not(None))).all()
+            order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+            for i, r in enumerate(sorted(ranked, key=lambda r: (order[r.severity], -(r.severity_score or 0), r.id)), 1):
+                r.rank = i     # re-rank so a downgraded finding moves down the list
+        else:
+            what = f"severity {v.severity} confirmed"
+            v.review_status = "confirmed"
+        v.review_note, v.reviewed_at = note or None, now()
+        ep = db.get(ApiEndpoint, v.endpoint_id) if v.endpoint_id else None
+        db.add(AuditLog(scan_id=scan_id, stage="triage", method=ep.method if ep else "-", url=ep.path if ep else "-",
+                        decision="allow", test_case_id=v.test_case_id, sent=False, sent_at=now(),
+                        reason=f"finding #{v.id} reviewed by a human on the dashboard: {what}"
+                               + (f" ({note})" if note else "") + "; nothing sent"))
+        db.add(AgentLog(scan_id=scan_id, stage="triage", level="info",
+                        message=f"finding #{v.id} {v.title}: {what} by a human reviewer"))
+        db.commit()
+        return {"id": v.id, "severity": v.severity, "review_status": v.review_status}
 
 
 @app.post("/scans/{scan_id}/kill")

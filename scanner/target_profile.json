@@ -4,15 +4,68 @@
   "bundle_path": "/app.js",
   "scope": {
     "_about": "Enforced by the safety gateway on every request. Host = the portal_url host only.",
-    "allowed_methods": ["GET", "POST", "HEAD", "OPTIONS"],
-    "excluded_paths": ["/api/admin/", "/_next/webpack-hmr"],
+    "allowed_methods": [
+      "GET",
+      "POST",
+      "HEAD",
+      "OPTIONS"
+    ],
+    "excluded_paths": [
+      "/api/admin/",
+      "/_next/webpack-hmr"
+    ],
     "login_path": "/api/login",
     "token_field": "token"
   },
   "accounts": [
-    {"label": "A-admin",    "username": "a_admin",    "password": "DelhiAdmin@123",  "sample_booking_id": 1003},
-    {"label": "A-subagent", "username": "a_subagent", "password": "DelhiSub@123",    "sample_booking_id": 1003},
-    {"label": "B-admin",    "username": "b_admin",    "password": "MumbaiAdmin@123", "sample_booking_id": 1002},
-    {"label": "B-subagent", "username": "b_subagent", "password": "MumbaiSub@123",   "sample_booking_id": 1002}
-  ]
+    {
+      "label": "A-admin",
+      "username": "a_admin",
+      "password": "DelhiAdmin@123",
+      "sample_booking_id": 1003
+    },
+    {
+      "label": "A-subagent",
+      "username": "a_subagent",
+      "password": "DelhiSub@123",
+      "sample_booking_id": 1003
+    },
+    {
+      "label": "B-admin",
+      "username": "b_admin",
+      "password": "MumbaiAdmin@123",
+      "sample_booking_id": 1002
+    },
+    {
+      "label": "B-subagent",
+      "username": "b_subagent",
+      "password": "MumbaiSub@123",
+      "sample_booking_id": 1002
+    }
+  ],
+  "ownership": {
+    "_about": "Asset ownership data (an input the brief lists): which team owns which API path. Matched on the path with any version prefix like /v1 removed. Paths not listed fall back to a guess from the endpoint's purpose.",
+    "paths": [
+      {
+        "prefix": "/api/bookings",
+        "team": "Bookings team"
+      },
+      {
+        "prefix": "/api/payments",
+        "team": "Payments team"
+      },
+      {
+        "prefix": "/api/refunds",
+        "team": "Payments team"
+      },
+      {
+        "prefix": "/api/login",
+        "team": "Identity team"
+      },
+      {
+        "prefix": "/api/users",
+        "team": "Identity team"
+      }
+    ]
+  }
 }

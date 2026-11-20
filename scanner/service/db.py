@@ -165,6 +165,16 @@ class Vulnerability(Base):
     dedupe_key: Mapped[str | None] = mapped_column(String(200), nullable=True, index=True)
     verification_reason: Mapped[str | None] = mapped_column(Text, nullable=True)   # why verified / rejected (Phase 7)
     checks_json: Mapped[str | None] = mapped_column(Text, nullable=True)           # [{name, passed, detail}]
+    # triage (Phase 8)
+    duplicate_of: Mapped[int | None] = mapped_column(ForeignKey("vulnerabilities.id"), nullable=True)  # merged into
+    severity_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    severity_reason: Mapped[str | None] = mapped_column(Text, nullable=True)       # the factors behind the severity
+    rank: Mapped[int | None] = mapped_column(Integer, nullable=True)               # 1 = fix first
+    owner_source: Mapped[str | None] = mapped_column(String(30), nullable=True)    # ownership data / guessed
+    first_seen_scan_id: Mapped[int | None] = mapped_column(Integer, nullable=True) # earliest scan with this flaw
+    review_status: Mapped[str | None] = mapped_column(String(20), nullable=True)   # awaiting_review/confirmed/changed/not_needed
+    review_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     first_seen_at: Mapped[datetime] = mapped_column(DateTime, default=now)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 

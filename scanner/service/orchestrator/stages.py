@@ -6,6 +6,7 @@ Phase 4: attack_planning is real (see service/planner); it plans, never executes
 Phase 5: safety_gateway is real (see service/gateway/stage.py): gate self-test + approval queue.
 Phase 6: execution is real (see service/executor): runs cleared/approved tests, records raw results.
 Phase 7: verification is real (see service/verifier): re-proves each suspicious result.
+Phase 8: triage is real (see service/triage): merges duplicates, scores severity, maps owners.
 The gate itself runs inside the shared HTTP client for every stage. The shared wrapper (`run_stage`) does the
 bookkeeping: mark the stage running, log "entered <stage>", wait briefly so
 a human can watch, mark it done, and save the scan's state. The per-stage
@@ -28,6 +29,7 @@ from ..inventory import classify
 from ..executor import run_execution
 from ..planner import run_planning
 from ..verifier import run_verification
+from ..triage import run_triage
 from ..recon import run_recon
 from .state import ScanState
 
@@ -107,7 +109,9 @@ def verification(state: ScanState) -> dict:
 
 
 def triage(state: ScanState) -> dict:
-    return {}
+    scan_id = state["scan_id"]
+    counts = run_triage(scan_id, lambda msg, level="info": log(scan_id, "triage", msg, level))
+    return {"triage": counts}
 
 
 def reporting(state: ScanState) -> dict:

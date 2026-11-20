@@ -108,7 +108,7 @@ export default function ScanDetail({ scan }: { scan: Detail }) {
         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 px-5 py-3">
           <div>
             <h3 className="card-title">Findings</h3>
-            <p className="mt-0.5 text-xs text-slate-400">Each suspicious result re-proved on fresh data plus an independent check. Severity is assigned in triage.</p>
+            <p className="mt-0.5 text-xs text-slate-400">Each suspicious result re-proved on fresh data plus an independent check, then triaged: duplicates merged, ranked by business severity, mapped to an owner.</p>
           </div>
           <FindingsHeader findings={scan.findings} />
         </div>

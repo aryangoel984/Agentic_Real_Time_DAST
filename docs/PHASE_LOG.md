@@ -948,3 +948,109 @@ A full scan used the rule-based plan with all money tests approved:
    scanner/.venv/bin/python scanner/scripts/check_verification.py
    ```
 6. Run `python seed.py` afterwards.
+
+## Phase 8 — Triage (rank it, size it, give it to the right team)
+
+### What it is and why
+
+Verification leaves us with a set of proven findings. These are not yet something a team can act on:
+- some are the same flaw found twice
+- none has a severity
+- nobody owns them
+
+The brief describes triage as: remove duplicates, score severity in business context, and map each finding to an owner. It also says a human checks high-severity findings before they are escalated. Triage does exactly that.
+
+Triage only works on what the scanner already recorded. **It sends no requests to the target.**
+
+### What it does
+
+1. **Merges duplicates.** Each verified finding gets a root-cause key made of the type of flaw, the method and the path with any version prefix (like `/v1`) removed. Findings with the same key are one flaw.
+   - The finding on the current (active) endpoint becomes the main one.
+   - The others are linked to it as **"also affects"**, with their inventory label.
+   - On the practice target, the old v1 booking leak is merged into the main booking leak, so 5 verified findings become **4**.
+2. **Scores severity by what the endpoint means to the business.** It uses fixed, readable rules (no AI), so every result can be explained and comes out the same on every run:
+
+| Factor | Points |
+|---|---|
+| **At stake** | money paid out or lost 5 · customer personal data 3 · account takeover 3 · partner and supplier data 2 · internal information 1 |
+| **Who can do it** | anyone with no login 3 · any agency user 2 · only a lower role 1 |
+| **Exposure** | +1 if the flaw can be reached through a zombie or shadow endpoint that nobody watches |
+
+   A score of 7 or more is **critical**, 5–6 is **high**, 3–4 is **medium**, and below that is **low**. Each finding shows the reason, for example: "at stake: money paid out or lost (+5) · who can do it: any agency user, on their own bookings (+2) → score 7 = critical".
+
+3. **Writes a business-impact line** in plain words, with the real numbers from the test. For example: "An agency can refund the same booking more than once and be paid out more than it ever paid. In the test: booking #1022 now shows ₹50,000 refunded against ₹25,000 paid."
+4. **Assigns an owner.** A new `ownership` list in `scanner/target_profile.json` maps path prefixes to teams. The brief lists asset ownership data as an input we may use. A path not on the list falls back to the team inventory guessed from the endpoint's purpose, and is shown as **(guessed)**.
+5. **Holds critical and high findings for human review.** On the dashboard a reviewer can:
+   - **Confirm** the severity
+   - **Change severity**, which requires a reason; the list re-ranks itself
+
+   Each decision is written to the audit log (stage **triage**, nothing sent). Medium and low findings don't need review. Reports (Phase 9) will escalate only reviewed findings.
+6. **Matches earlier scans.** A finding whose root-cause key was already verified in an earlier scan shows **"first seen in scan N"**, so new problems stand apart from known ones. Retest (Phase 10) will build on this.
+
+**False positives and unverified results are not ranked.** They are listed below the ranked list under "Not ranked".
+
+### Dashboard
+
+The **Findings** card is now a ranked list.
+- **Top line:** "4 findings · 2 critical · 2 high · 1 duplicate merged · 4 awaiting review".
+- **Each finding:**
+  - rank and severity chip (critical solid red, high light red, medium amber, low grey)
+  - title, owner, and "new in this scan" or "first seen in scan N"
+  - impact line and why-severity line
+  - "also affects" endpoints
+  - the verification checks, review controls and evidence
+
+### How it was tested
+
+**`scanner/scripts/check_triage.py`** builds verified findings in a scratch database, in the same shape Phase 7 produces, and runs the real triage stage and review API. No servers are needed. **28/28 checks passed**, covering:
+- merging
+- each severity rule (critical, high, medium, low)
+- owners from the ownership list and guessed owners
+- the real numbers in the impact line
+- false positives and unverified results kept out of the ranking
+- earlier-scan matching
+- 0 audit rows from triage
+- the review API: confirm, no second review, a reason is required, re-ranking after a downgrade, false positives and merged duplicates refused, and each decision audited
+
+**Live scan 1** (rule-based plan, money tests approved):
+
+| Rank | Severity | Finding | Owner |
+|---|---|---|---|
+| 1 | critical | Price tampering on POST /api/payments (₹1 paid of ₹25,000) | Payments team |
+| 2 | critical | Duplicate refund on POST /api/refunds (₹50,000 refunded against ₹25,000 paid) | Payments team |
+| 3 | high | Cross-agency booking read on GET /api/bookings/{id}, also affects GET /api/v1/bookings/{id} (zombie) | Bookings team |
+| 4 | high | No login on GET /api/internal/partner-details (shadow) | Partner integrations (guessed) |
+
+- Triage wrote **0 audit rows** and sent nothing. The scan's highest rate was 5 requests per second.
+- On the dashboard, finding 1 was confirmed and finding 4 was changed to medium with a reason. Both appear in the audit log with stage triage and sent = no.
+
+**Live scan 2:** the same 4 findings, each marked **"first seen in scan 1"**, again with 0 triage audit rows. The target was reseeded after both scans.
+
+### Key decisions and why
+
+- **Rules, not the LLM, for severity.** Severity drives what gets fixed first, so it must be explainable and the same every time. Each point in the score is shown.
+- **The current endpoint leads a merged finding.** The fix belongs in the code that is in use. The zombie copy is listed so it gets turned off, and it raises the severity because nobody watches it.
+- **A human reviews serious findings, and a severity change needs a reason.** The brief asks for this. It also keeps the scanner from escalating a critical on its own.
+
+### Limitations
+
+- **The severity points are our judgement.** They are fixed and shown in full, but they are not a standard like CVSS.
+- **The impact text is a template for each test type.** A new kind of test would need its own line.
+- **The ownership list is a small hand-written input.** In real use it would come from a service catalogue.
+- **Merging only joins the same flaw on the same route across versions.** Two different routes with one shared bug stay separate.
+
+### How to run it
+
+1. Delete the scanner database once, because new columns were added:
+   ```bash
+   rm -f scanner/data/scanner.db scanner/data/scanner.db-wal scanner/data/scanner.db-shm
+   ```
+2. Reseed the target and start everything as usual.
+3. Run a scan and approve the money tests.
+4. The **Findings** card shows 4 ranked findings.
+5. Confirm one finding and change another's severity with a reason. Check both in the Safety gateway audit log.
+6. Run a second scan and look for "first seen in scan 1".
+7. Run the rules check (no servers needed). It should end with 28/28:
+   ```bash
+   scanner/.venv/bin/python scanner/scripts/check_triage.py
+   ```
