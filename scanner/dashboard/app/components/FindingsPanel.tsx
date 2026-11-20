@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Finding, postJson, ScanDetail } from "../lib/api";
+import { Finding, formatDateTime, postJson, ScanDetail } from "../lib/api";
 import { Evidence } from "./ExecutionPanel";
 
 export const FINDING_STYLES: Record<string, { label: string; chip: string }> = {
@@ -20,6 +20,17 @@ const SEVERITIES = ["critical", "high", "medium", "low"];
 const ORDER: Record<string, number> = { verified: 0, unverified: 1, false_positive: 2 };
 
 const ranked = (fs: Finding[]) => fs.filter((f) => f.rank != null).sort((a, b) => (a.rank ?? 0) - (b.rank ?? 0));
+const openRanked = (fs: Finding[]) => ranked(fs).filter((f) => f.status !== "fixed");
+
+const RETEST: Record<string, { label: string; cls: string }> = {
+  fixed: { label: "fixed", cls: "text-emerald-700" },
+  still_vulnerable: { label: "still vulnerable", cls: "text-red-700" },
+  partly_fixed: { label: "partly fixed", cls: "text-amber-800" },
+  inconclusive: { label: "inconclusive", cls: "text-amber-800" },
+  not_retested: { label: "not retested", cls: "text-slate-500" },
+  still_present: { label: "still present", cls: "text-red-700" },
+  stopped: { label: "stopped", cls: "text-slate-500" },
+};
 
 export function FindingsHeader({ findings }: { findings: Finding[] }) {
   if (!findings.length) return null;
@@ -35,16 +46,19 @@ export function FindingsHeader({ findings }: { findings: Finding[] }) {
       </div>
     );
   }
-  const sev = (s: string) => top.filter((f) => f.severity === s).length;
+  const open = openRanked(findings);
+  const fixed = top.length - open.length;
+  const sev = (s: string) => open.filter((f) => f.severity === s).length;
   const merged = findings.filter((f) => f.duplicate_of != null).length;
-  const waiting = top.filter((f) => f.review_status === "awaiting_review").length;
+  const waiting = open.filter((f) => f.review_status === "awaiting_review").length;
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs font-medium">
-      <span className="text-slate-800">{top.length} finding{top.length === 1 ? "" : "s"}</span>
+      <span className="text-slate-800">{open.length} open finding{open.length === 1 ? "" : "s"}</span>
       {SEVERITIES.filter(sev).map((s) => (<span key={s} className="contents">{sep}
         <span className={s === "critical" || s === "high" ? "text-red-700" : s === "medium" ? "text-amber-800" : "text-slate-500"}>{sev(s)} {s}</span></span>))}
       {merged > 0 && (<>{sep}<span className="text-slate-500">{merged} duplicate{merged === 1 ? "" : "s"} merged</span></>)}
       {sep}<span className={waiting ? "text-amber-800" : "text-emerald-700"}>{waiting ? `${waiting} awaiting review` : "all reviewed"}</span>
+      {fixed > 0 && (<>{sep}<span className="text-emerald-700">{fixed} fixed</span></>)}
     </div>
   );
 }
@@ -116,6 +130,70 @@ function Review({ scanId, f }: { scanId: number; f: Finding }) {
   );
 }
 
+function RetestBox({ scan, f }: { scan: ScanDetail; f: Finding }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [open, setOpen] = useState(false);
+  const money = scan.test_cases.find((t) => t.id === f.test_case_id)?.requires_approval;
+  const last = f.retests[0];
+  const canRetest = f.status === "verified" && !f.retest_running && !["queued", "running"].includes(scan.status) && !scan.halt_reason;
+
+  const start = async () => {
+    if (money && !window.confirm("This retest re-runs a money test: it creates synthetic bookings, payments and refunds on the target, through the safety gateway. Continue?")) return;
+    setBusy(true); setError(null);
+    try { await postJson(`/scans/${scan.id}/findings/${f.id}/retest`); } catch (e) { setError(String(e)); } finally { setBusy(false); }
+  };
+  if (f.status !== "verified" && f.status !== "fixed") return null;
+  return (
+    <div className="mt-2">
+      <div className="flex flex-wrap items-center gap-2 text-xs">
+        {f.status === "fixed" ? (
+          <span className="font-medium text-emerald-700">✓ Fixed: retest passed{f.fixed_at ? ` (${formatDateTime(f.fixed_at)})` : ""}</span>
+        ) : f.retest_running ? (
+          <span className="text-slate-600">Retest running through the safety gateway…</span>
+        ) : last ? (
+          <span className="text-slate-600">Last retest: <span className={`font-medium ${RETEST[last.result]?.cls ?? ""}`}>{RETEST[last.result]?.label ?? last.result}</span>
+            <span className="text-slate-400"> ({last.triggered_by}, {formatDateTime(last.at)})</span>: {last.reason}</span>
+        ) : (
+          <span className="text-slate-400">Not retested yet. After the fix is deployed, retest to close it.</span>
+        )}
+        <span className="ml-auto flex gap-2">
+          {f.retests.length > 0 && (
+            <button onClick={() => setOpen(!open)} className="text-[11px] text-slate-400 hover:text-slate-600">
+              {open ? "▾" : "▸"} retest history ({f.retests.length})
+            </button>
+          )}
+          {f.status === "verified" && (
+            <button disabled={!canRetest || busy} onClick={start}
+              className="rounded-md bg-white px-2.5 py-1 text-xs font-medium text-slate-700 ring-1 ring-slate-300 hover:bg-slate-50 disabled:opacity-50">
+              {f.retest_running || busy ? "Retesting…" : "Retest"}
+            </button>
+          )}
+        </span>
+      </div>
+      {error && <p className="mt-1 text-xs text-red-700">{error}</p>}
+      {open && (
+        <ul className="mt-2 space-y-2">
+          {f.retests.map((h, i) => (
+            <li key={i} className="rounded-md bg-slate-50 p-2.5 text-xs ring-1 ring-slate-200">
+              <p><span className={`font-medium ${RETEST[h.result]?.cls ?? ""}`}>{RETEST[h.result]?.label ?? h.result}</span>
+                <span className="text-slate-400"> · {h.triggered_by} · {formatDateTime(h.at)}</span></p>
+              <p className="mt-0.5 text-slate-600">{h.reason}</p>
+              {(h.checks ?? []).map((c, j) => (
+                <p key={j} className="mt-0.5 text-slate-600">
+                  <span className={c.passed ? "text-emerald-600" : c.passed === false ? "text-red-600" : "text-amber-600"}>{c.passed ? "✓" : c.passed === false ? "✗" : "?"}</span>{" "}
+                  <span className="font-mono text-[11px] text-slate-400">{c.where}</span> <span className="font-medium">{c.name}:</span> {c.detail}
+                </p>
+              ))}
+              {(h.evidence ?? []).length > 0 && <Evidence items={h.evidence ?? []} />}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 function RankedRow({ scan, f, dupes }: { scan: ScanDetail; f: Finding; dupes: Finding[] }) {
   const [open, setOpen] = useState(false);
   const ep = (id: number | null) => scan.endpoints.find((e) => e.id === id);
@@ -128,6 +206,9 @@ function RankedRow({ scan, f, dupes }: { scan: ScanDetail; f: Finding; dupes: Fi
         <span className={`whitespace-nowrap rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ring-1 ${SEVERITY[f.severity ?? "low"]}`}>
           {f.severity}
         </span>
+        {f.status === "fixed" && (
+          <span className="whitespace-nowrap rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-700 ring-1 ring-emerald-200">fixed</span>
+        )}
         <span className="text-sm font-medium text-slate-800">{f.title}</span>
         <span className="ml-auto flex items-center gap-3 text-[11px] text-slate-500">
           <span>owner: <span className="font-medium text-slate-700">{f.owner ?? "unknown"}</span>{f.owner_source === "guessed" ? " (guessed)" : ""}</span>
@@ -145,7 +226,8 @@ function RankedRow({ scan, f, dupes }: { scan: ScanDetail; f: Finding; dupes: Fi
           </p>
         )}
         <Checks f={f} />
-        <Review scanId={scan.id} f={f} />
+        {f.status !== "fixed" && <Review scanId={scan.id} f={f} />}
+        <RetestBox scan={scan} f={f} />
         {open && <Evidence items={evidence} />}
       </div>
     </li>
@@ -182,7 +264,8 @@ export default function FindingsPanel({ scan, stageStatus }: { scan: ScanDetail;
       : "Verification hasn't run yet. It re-checks every suspicious result from execution.";
     return <p className="px-5 py-10 text-center text-sm text-slate-500">{msg}</p>;
   }
-  const top = ranked(findings);
+  const top = openRanked(findings);
+  const fixedRows = ranked(findings).filter((f) => f.status === "fixed");
   const rest = findings.filter((f) => f.rank == null && f.duplicate_of == null)
     .sort((a, b) => (ORDER[a.status] ?? 3) - (ORDER[b.status] ?? 3) || a.id - b.id);
   return (
@@ -191,6 +274,16 @@ export default function FindingsPanel({ scan, stageStatus }: { scan: ScanDetail;
         <ul className="divide-y divide-slate-100">
           {top.map((f) => <RankedRow key={f.id} scan={scan} f={f} dupes={findings.filter((d) => d.duplicate_of === f.id)} />)}
         </ul>
+      )}
+      {fixedRows.length > 0 && (
+        <>
+          <p className="border-y border-slate-100 bg-slate-50 px-5 py-2 text-[11px] font-medium uppercase tracking-wider text-slate-400">
+            Fixed: retest passed
+          </p>
+          <ul className="divide-y divide-slate-100">
+            {fixedRows.map((f) => <RankedRow key={f.id} scan={scan} f={f} dupes={findings.filter((d) => d.duplicate_of === f.id)} />)}
+          </ul>
+        </>
       )}
       {rest.length > 0 && (
         <>

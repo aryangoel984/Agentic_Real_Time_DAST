@@ -8,13 +8,10 @@ Phase 6: execution is real (see service/executor): runs cleared/approved tests, 
 Phase 7: verification is real (see service/verifier): re-proves each suspicious result.
 Phase 8: triage is real (see service/triage): merges duplicates, scores severity, maps owners.
 Phase 9: reporting is real (see service/reporting): builds the report and tickets from the database.
+Phase 10: retest is real (see service/retest): re-proves open findings from earlier scans.
 The gate itself runs inside the shared HTTP client for every stage. The shared wrapper (`run_stage`) does the
-bookkeeping: mark the stage running, log "entered <stage>", wait briefly so
-a human can watch, mark it done, and save the scan's state. The per-stage
-functions return only what that stage changes; for now that is nothing,
-except retest, which counts its rounds.
-
-Later phases replace each stub body with real work.
+bookkeeping: mark the stage running, log "entered <stage>", mark it done, and save the scan's state.
+Each stage function returns only what that stage adds to the scan's state.
 """
 import json
 import time
@@ -32,6 +29,7 @@ from ..planner import run_planning
 from ..verifier import run_verification
 from ..triage import run_triage
 from ..reporting import run_reporting
+from ..retest import run_retest_stage
 from ..recon import run_recon
 from .state import ScanState
 
@@ -123,10 +121,9 @@ def reporting(state: ScanState) -> dict:
 
 
 def retest(state: ScanState) -> dict:
-    pending = state.get("findings_to_retest", [])
-    log(state["scan_id"], "retest",
-        f"{len(pending)} finding(s) awaiting retest" + ("" if pending else "; nothing to loop back for"))
-    return {"retest_round": state.get("retest_round", 0) + (1 if pending else 0)}
+    scan_id = state["scan_id"]
+    counts = run_retest_stage(scan_id, lambda msg, level="info": log(scan_id, "retest", msg, level))
+    return {"retest": counts}
 
 
 STAGE_FUNCS: dict[str, Callable[[ScanState], dict]] = {

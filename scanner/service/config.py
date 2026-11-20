@@ -20,8 +20,6 @@ DATABASE_URL = os.getenv("SCANNER_DATABASE_URL", f"sqlite:///{DATA_DIR / 'scanne
 # Remove (set to 0) once stages do real work.
 STUB_STAGE_DELAY_SECONDS = float(os.getenv("STUB_STAGE_DELAY_SECONDS", "1.5"))
 
-# How many times the retest stage may loop back to verification in one scan.
-MAX_RETEST_ROUNDS = int(os.getenv("MAX_RETEST_ROUNDS", "1"))
 
 # The ten pipeline stages, in order.
 STAGES = [

@@ -108,7 +108,7 @@ export default function SafetyPanel({ scan }: { scan: ScanDetail }) {
   };
 
   const s = audit?.summary;
-  const live = scan.status === "running" || scan.status === "queued";
+  const live = scan.status === "running" || scan.status === "queued" || !!scan.retest_running;
   const risky = (scan.test_cases ?? []).filter((t) => t.requires_approval);
   const pending = risky.filter((t) => t.status === "pending_approval");
   const ep = (id: number) => scan.endpoints.find((e) => e.id === id);
@@ -119,6 +119,7 @@ export default function SafetyPanel({ scan }: { scan: ScanDetail }) {
   if (scan.halt_reason) state = { text: `${scan.halted_by === "human" ? "Killed" : "Stopped"}: ${scan.halt_reason}`, cls: "text-red-700" };
   else if (scan.paused_reason) state = { text: `Paused: ${scan.paused_reason}. Requests are held until it recovers.`, cls: "text-amber-800" };
   else if (pending.length && live) state = { text: `Waiting for your decision on ${pending.length} high-risk test${pending.length > 1 ? "s" : ""}`, cls: "text-amber-800" };
+  else if (scan.retest_running && scan.status !== "running") state = { text: "Retest running: every request passes the gateway", cls: "text-slate-700" };
   else if (live) state = { text: "Running: every request passes the gateway", cls: "text-slate-700" };
   else state = { text: `Scan ${scan.status}`, cls: "text-slate-500" };
 

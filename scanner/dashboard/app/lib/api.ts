@@ -21,6 +21,7 @@ export type ScanSummary = {
   paused_reason: string | null;
   halted_by: string | null;
   halt_reason: string | null;
+  retest_running?: boolean;
   stages_done: number;
   stages_total: number;
   trigger: Trigger | null;
@@ -59,6 +60,21 @@ export type Finding = {
   review_status: "awaiting_review" | "confirmed" | "changed" | "not_needed" | null;
   review_note: string | null;
   reviewed_at: string | null;
+  retest_status: string | null;
+  last_retested_at: string | null;
+  fixed_at: string | null;
+  retest_running: boolean;
+  retests: RetestAttempt[];
+};
+
+export type RetestAttempt = {
+  at: string | null;
+  result: "fixed" | "still_vulnerable" | "partly_fixed" | "inconclusive" | "not_retested" | "still_present" | "stopped" | string;
+  reason: string | null;
+  triggered_by: string | null;
+  scan_id?: number | null;
+  checks?: { name: string; passed: boolean | null; detail: string; where?: string }[];
+  evidence?: (EvidenceItem & { where?: string })[];
 };
 
 export type Endpoint = {
@@ -186,7 +202,7 @@ export const STAGE_HINTS: Record<string, string> = {
   verification: "Prove each hit with minimal evidence",
   triage: "De-duplicate, score severity, map owner",
   reporting: "Raise ticket-ready findings",
-  retest: "Re-check after a fix; loops back to verification",
+  retest: "Re-prove open findings from earlier scans; closes the fixed ones",
 };
 
 export function formatTime(iso: string | null): string {
@@ -229,7 +245,10 @@ export type Ticket = {
   owner: string | null;
   owner_source: string | null;
   first_seen_scan_id: number | null;
-  escalation: "ready" | "draft";
+  escalation: "ready" | "draft" | "resolved";
+  fixed_at: string | null;
+  retest_status: string | null;
+  retests: RetestAttempt[];
   review: string;
   vuln_class: string | null;
   test_type: string;
@@ -264,7 +283,7 @@ export type Report = {
   trigger: { event: string | null; method: string | null; endpoint: string | null; version: string | null; received_at: string | null };
   speed: { first_verified_at: string | null; change_to_first_verified_s: number | null };
   summary: {
-    tickets: number; by_severity: Record<string, number>; ready: number; draft: number;
+    tickets: number; open: number; fixed: number; by_severity: Record<string, number>; ready: number; draft: number;
     merged_duplicates: number; false_positives: number; unverified: number; endpoints: number;
     inventory: Record<string, number>; top_risks: string[];
   };

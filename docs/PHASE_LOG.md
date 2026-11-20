@@ -1162,3 +1162,120 @@ The earlier checks still pass: gateway 23/23, verification 7/7, triage 28/28.
    scanner/.venv/bin/python scanner/scripts/check_report.py
    ```
 6. Run `python seed.py` afterwards.
+
+## Phase 10 — Retest (prove the fix, close the finding)
+
+### What it is and why
+
+The brief describes retest as "reruns the proof after a fix and closes the finding once it is resolved", and lists automatic retesting under actionability. Before this phase, a finding stayed open forever, even after the bug was fixed. Now the scanner can prove a fix worked and close the ticket, or say clearly that it didn't.
+
+### How a fix is proved
+
+A finding is closed as **fixed** only if two checks pass in every place it was found, mirroring the two-check rule of verification:
+
+1. **The attack no longer works on fresh data.** The same attack as in execution runs again on a new synthetic booking and must be refused.
+2. **The rightful use still works.** The legitimate version of the same action must still succeed, so a "fix" that simply breaks the endpoint for everyone is not counted:
+
+| Finding | Attack must now fail | Rightful use must still work |
+|---|---|---|
+| Cross-agency read | B-admin reading A's booking is refused | A-admin still reads their own booking |
+| Old v1 version | same as above | the owner still reads it, **or** the route is retired for everyone (410/404), which is the recommended fix |
+| Missing login | a request with no login gets 401 | a logged-in request still gets the data |
+| Duplicate refund | the second refund is refused | the first, legitimate refund was accepted |
+| Price tampering | paying ₹1 is refused | paying the full price is accepted |
+
+The result for a finding is one of:
+- **fixed**: closed. Every open copy of the same flaw in earlier scans is closed with it.
+- **still vulnerable**: the attack worked again.
+- **partly fixed**: for a merged finding, some places are fixed and others are not. For example, the main booking route is fixed but the v1 copy still leaks.
+- **inconclusive**: the attack was refused but the rightful use failed too, or a check couldn't run. The finding stays open for a human.
+- **not retested**: the matching test wasn't cleared or approved in this scan, so nothing was sent.
+- **still present**: a new scan found the same flaw again.
+- **stopped**: the kill switch was pressed during the retest.
+
+### When retests happen
+
+- **Retest button** on each open finding, used after a fix is deployed.
+  - It runs in the background under the finding's own scan, tagged with its own already-approved tests, so every gateway rule still applies.
+  - Money findings ask for a confirmation first, because the retest creates synthetic bookings, payments and refunds.
+  - The kill switch is shown and works while a retest runs.
+  - A retest is refused while the scan itself is still running, after it was killed, or on a finding that is already fixed.
+- **Automatically, in the retest stage at the end of every scan.** For each open finding from earlier scans:
+  - If this scan found the same flaw again, it is marked **still present** and nothing extra is sent.
+  - Otherwise the scanner runs the proof, tagged with this scan's matching test, and only if that test was cleared or approved. A denied money test means **not retested**; the scanner never works around an approval.
+
+**Every attempt is kept** in `retest_history`: when it ran, what triggered it, the result, the reason, each check, and minimal masked evidence. Retest requests appear in the audit log under stage **retest**.
+
+The orchestrator no longer has the unused loop from retest back to verification. Retest does its own proof inside its stage, so the pipeline is one straight line of 10 stages, all of them real now.
+
+### Dashboard and report
+
+- **Findings card:**
+  - each open finding has a **Retest** button, its last retest result with the reason, and an expandable retest history showing each check (✓/✗ and where) and the evidence
+  - fixed findings show a green FIXED chip and move to a **Fixed: retest passed** group
+  - the header shows "1 open finding · … · 3 fixed"
+- **Report:**
+  - the summary shows open vs fixed
+  - each ticket lists its retest history
+  - fixed tickets move to **Resolved (fixed and retested)**
+  - in the tickets JSON, fixed tickets have the status "Resolved (fixed, retest passed)"
+
+### How it was tested
+
+**`scanner/scripts/check_retest.py`** uses a fake platform with the five planted flaws, each with its own fix switch, plus a "broken" switch where booking reads fail for everyone. It runs the real retest code through the real gateway with nothing sent anywhere. **23/23 checks passed**, covering:
+- nothing fixed → still vulnerable
+- main route fixed, v1 not → partly fixed
+- broken for everyone → inconclusive
+- main route fixed and v1 retired → fixed
+- refund, price and shadow fixes
+- masked evidence, and every request in the audit log
+- refusals: already fixed, scan still running
+- the kill switch mid-retest → stopped, and the finding stays open
+- **automatic retest in a later scan**: found again → still present with nothing sent; fixed → closed; denied test → not retested with nothing sent
+
+The earlier checks still pass: gateway 23/23, verification 7/7, triage 28/28, report 22/22.
+
+**Live, on a separate copy of the target** (its own backend on 8001 with a scratch database, and a portal copy on 3002), so the usual servers and data were untouched:
+
+1. **Scan 1 with no fixes:** the usual 4 findings.
+2. **Backend restarted with `FIX_IDOR`, then Retest clicked** on the booking leak in the dashboard → **partly fixed**: B-admin now gets 404 on `/api/bookings/{id}` while A-admin still reads their own booking, but `/api/v1/bookings/{id}` still leaked.
+3. **Backend restarted with `FIX_ZOMBIE`, `FIX_DOUBLE_REFUND` and `FIX_SHADOW_AUTH` added**, then retests:
+   - booking leak → **fixed** (v1 now 410, retired for everyone)
+   - double refund → **fixed** (second refund 409, first refund 200)
+   - price tampering (not fixed) → **still vulnerable**
+4. **Scan 2:** its retest stage marked price tampering **still present** (it found it again, so nothing extra was sent) and closed the shadow route as **fixed** automatically.
+5. **The Findings card and the report** showed 1 open and 3 fixed, with Resolved tickets and full retest histories.
+6. **Safety:** 0 retest requests blocked, peak rate 5/s in both scans.
+
+### Key decisions and why
+
+- **Two checks to close a finding.** "The attack failed" alone would accept a fix that breaks the feature, or a moment when the target was down. The rightful-use check rules both out.
+- **Retiring a zombie counts as fixed.** That is what the inventory recommends for it.
+- **Automatic retests respect this scan's approvals.** A money test denied in the new scan is never re-run behind the human's back.
+- **The new scan is itself the retest for flaws it finds again.** That avoids sending the same attack twice.
+
+### Limitations
+
+- **One fresh attempt per place.** A fix that only works some of the time could be closed too early; the next scan would find it again.
+- **Rightful-use checks exist for the test types in the catalogue.** A new test type would need its own.
+- **A killed scan's findings can't be retested manually,** because its approvals no longer apply. A new scan retests them.
+
+### How to run it
+
+1. Delete the scanner database once, because new columns were added:
+   ```bash
+   rm -f scanner/data/scanner.db scanner/data/scanner.db-wal scanner/data/scanner.db-shm
+   ```
+2. Reseed the target, start everything, run a scan and approve the money tests.
+3. Stop the backend and start it again with fixes on (from `backend/`):
+   ```bash
+   FIX_IDOR=true ../.venv/bin/uvicorn app.main:app --port 8000
+   ```
+4. Click **Retest** on the booking leak. It reports partly fixed, because v1 still leaks.
+5. Restart the backend with `FIX_IDOR=true FIX_ZOMBIE=true FIX_DOUBLE_REFUND=true`, then retest the booking leak and the double refund. Both close as fixed.
+6. Run a new scan and look at its retest stage and the old scan's findings.
+7. Run the check (no servers needed). It should end with 23/23:
+   ```bash
+   scanner/.venv/bin/python scanner/scripts/check_retest.py
+   ```
+8. Restart the backend without fix switches and run `python seed.py`.

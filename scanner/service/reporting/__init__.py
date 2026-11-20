@@ -15,7 +15,7 @@ from datetime import datetime
 from sqlalchemy import select
 
 from ..config import GATEWAY_MAX_RPS
-from ..db import (ApiEndpoint, AuditLog, DeploymentEvent, Evidence, ScanRun, SessionLocal, TestCase,
+from ..db import (ApiEndpoint, AuditLog, DeploymentEvent, Evidence, RetestHistory, ScanRun, SessionLocal, TestCase,
                   Vulnerability)
 from ..planner.catalogue import CATALOGUE
 from ..triage.rules import strip_version
@@ -67,19 +67,25 @@ def build_report(scan_id: int) -> dict | None:
             (vuln_ev.setdefault(x.vulnerability_id, []) if x.vulnerability_id else
              test_ev.setdefault(x.test_case_id, [])).append(_ev(x))
 
+        history: dict[int, list] = {}
+        for h in db.scalars(select(RetestHistory).where(RetestHistory.vulnerability_id.in_([v.id for v in vulns] or [0]))
+                            .order_by(RetestHistory.id)):
+            history.setdefault(h.vulnerability_id, []).append(
+                {"at": _iso(h.ran_at), "result": h.result, "reason": h.notes, "triggered_by": h.triggered_by})
         ranked = sorted((v for v in vulns if v.rank is not None), key=lambda v: v.rank)
         key_of = {v.id: f"DAST-{scan_id}-{v.rank:02d}" for v in ranked}
         for v in vulns:
             if v.duplicate_of in key_of:
                 key_of[v.id] = key_of[v.duplicate_of]
-        tickets = [_ticket(v, [d for d in vulns if d.duplicate_of == v.id], eps, tests, vuln_ev, key_of[v.id])
-                   for v in ranked]
+        tickets = [_ticket(v, [d for d in vulns if d.duplicate_of == v.id], eps, tests, vuln_ev, key_of[v.id],
+                           history.get(v.id, [])) for v in ranked]
 
         verified_at = [v.last_seen_at for v in vulns if v.status == "verified"]
         first_verified = min(verified_at) if verified_at else None
         change_at = event.received_at if event else run.created_at
 
-        sev = Counter(t["severity"] for t in tickets)
+        open_tickets = [t for t in tickets if t["escalation"] != "resolved"]
+        sev = Counter(t["severity"] for t in open_tickets)
         report = {
             "scan": {"id": scan_id, "status": run.status, "started_at": _iso(run.started_at),
                      "finished_at": _iso(run.finished_at), "duration_s": _seconds(run.started_at, run.finished_at)},
@@ -89,7 +95,8 @@ def build_report(scan_id: int) -> dict | None:
             "speed": {"first_verified_at": _iso(first_verified),
                       "change_to_first_verified_s": _seconds(change_at, first_verified)},
             "summary": {
-                "tickets": len(tickets), "by_severity": {s: sev.get(s, 0) for s in PRIORITY},
+                "tickets": len(tickets), "open": len(open_tickets), "fixed": len(tickets) - len(open_tickets),
+                "by_severity": {s: sev.get(s, 0) for s in PRIORITY},
                 "ready": sum(1 for t in tickets if t["escalation"] == "ready"),
                 "draft": sum(1 for t in tickets if t["escalation"] == "draft"),
                 "merged_duplicates": sum(1 for v in vulns if v.duplicate_of is not None),
@@ -98,7 +105,7 @@ def build_report(scan_id: int) -> dict | None:
                 "endpoints": len(eps),
                 "inventory": dict(Counter(e.classification or "unclassified" for e in eps.values())),
                 "top_risks": [f"{t['key']} {t['severity'].upper()}: {t['business_impact'].split('. ')[0].rstrip('.')}."
-                              for t in tickets[:3]],
+                              for t in open_tickets[:3]],
             },
             "tickets": tickets,
             "inventory": [_inventory_row(e, eps, vulns, tests, test_ev, vuln_ev, key_of)
@@ -110,11 +117,12 @@ def build_report(scan_id: int) -> dict | None:
     return report
 
 
-def _ticket(v, dupes, eps, tests, vuln_ev, key) -> dict:
+def _ticket(v, dupes, eps, tests, vuln_ev, key, retests) -> dict:
     ep, tc = eps[v.endpoint_id], tests[v.test_case_id]
     expected, actual = fixes.expected_actual(tc.test_type)
     ev = vuln_ev.get(v.id, [])
-    escalation = "draft" if v.review_status == "awaiting_review" else "ready"
+    escalation = ("resolved" if v.status == "fixed" else
+                  "draft" if v.review_status == "awaiting_review" else "ready")
     review = {"awaiting_review": "Waiting for human review: not escalated yet",
               "confirmed": f"Severity confirmed by a human reviewer{': ' + v.review_note if v.review_note else ''}",
               "changed": f"Severity changed by a human reviewer: {v.review_note or ''}".rstrip(": "),
@@ -129,6 +137,7 @@ def _ticket(v, dupes, eps, tests, vuln_ev, key) -> dict:
                      for e in [ep] + [eps[d.endpoint_id] for d in dupes]],
         "steps": fixes.steps(tc.test_type, ev), "expected": expected, "actual": actual,
         "checks": json.loads(v.checks_json or "[]"), "evidence": ev, "fix": fixes.fix_for(tc.test_type),
+        "fixed_at": _iso(v.fixed_at), "retest_status": v.retest_status, "retests": retests,
     }
 
 
@@ -224,14 +233,16 @@ def tickets_export(report: dict) -> list[dict]:
     return [{"key": t["key"], "summary": f"[{t['severity'].upper()}] {t['title']}", "priority": t["priority"],
              "component": t["owner"], "labels": ["dast", t["vuln_class"] or "", t["test_type"]] +
              sorted({a["classification"] for a in t["affected"] if a["classification"] in ("zombie", "shadow")}),
-             "status": "Ready to raise" if t["escalation"] == "ready" else "Draft: awaiting human review",
+             "status": {"ready": "Ready to raise", "draft": "Draft: awaiting human review",
+                        "resolved": "Resolved (fixed, retest passed)"}[t["escalation"]],
              "description": ticket_markdown(t)} for t in report["tickets"]]
 
 
 def run_reporting(scan_id: int, log) -> dict:
     r = build_report(scan_id)
     s = r["summary"]
-    log(f"report ready: {s['tickets']} ticket(s), {s['ready']} ready to raise, {s['draft']} waiting for human review; "
+    log(f"report ready: {s['tickets']} ticket(s), {s['ready']} ready to raise, {s['draft']} waiting for human review, "
+        f"{s['fixed']} resolved; "
         f"{len(r['inventory'])} zombie/shadow endpoint(s) described; {len(r['coverage']['clean'])} clean test(s) listed. "
         f"Open it from the Report card. No requests were sent")
     if r["speed"]["change_to_first_verified_s"] is not None:

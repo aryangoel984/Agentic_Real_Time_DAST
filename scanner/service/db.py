@@ -175,6 +175,10 @@ class Vulnerability(Base):
     review_status: Mapped[str | None] = mapped_column(String(20), nullable=True)   # awaiting_review/confirmed/changed/not_needed
     review_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # retest (Phase 10)
+    retest_status: Mapped[str | None] = mapped_column(String(20), nullable=True)   # latest retest result
+    last_retested_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    fixed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     first_seen_at: Mapped[datetime] = mapped_column(DateTime, default=now)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
@@ -195,8 +199,11 @@ class RetestHistory(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     vulnerability_id: Mapped[int] = mapped_column(ForeignKey("vulnerabilities.id"), index=True)
     scan_id: Mapped[int | None] = mapped_column(ForeignKey("scan_runs.id"), nullable=True)
-    result: Mapped[str] = mapped_column(String(20))                               # still_vulnerable/fixed/error
-    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    result: Mapped[str] = mapped_column(String(20))   # fixed/still_vulnerable/partly_fixed/inconclusive/not_retested/still_present/stopped
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)                 # the plain reason
+    triggered_by: Mapped[str | None] = mapped_column(String(30), nullable=True)    # manual / scan N
+    checks_json: Mapped[str | None] = mapped_column(Text, nullable=True)           # [{name, passed, detail, where}]
+    evidence_json: Mapped[str | None] = mapped_column(Text, nullable=True)         # masked exchanges
     ran_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 

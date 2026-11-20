@@ -5,7 +5,7 @@ import { fetchJson, Report, REPORT_BASE, ScanDetail, seconds } from "../lib/api"
 
 export default function ReportCard({ scan, stageStatus }: { scan: ScanDetail; stageStatus?: string }) {
   const [report, setReport] = useState<Report | null>(null);
-  const reviews = scan.findings.map((f) => f.review_status).join(",");
+  const reviews = scan.findings.map((f) => `${f.review_status}/${f.status}/${f.retests.length}`).join(",");
 
   useEffect(() => {
     if (stageStatus !== "done") return;
@@ -35,6 +35,7 @@ export default function ReportCard({ scan, stageStatus }: { scan: ScanDetail; st
             <span className={s.ready ? "text-emerald-700" : "text-slate-500"}>{s.ready} ready to raise</span>
             <span className="text-slate-400"> · </span>
             <span className={s.draft ? "text-amber-800" : "text-slate-500"}>{s.draft} draft (awaiting review)</span>
+            {s.fixed > 0 && (<><span className="text-slate-400"> · </span><span className="text-emerald-700">{s.fixed} resolved</span></>)}
           </dd>
         </div>
         <div>

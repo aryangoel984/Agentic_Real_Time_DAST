@@ -39,9 +39,9 @@ function TicketView({ t }: { t: Ticket }) {
         <span className="font-mono text-xs text-slate-400">{t.key}</span>
         <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ring-1 ${SEVERITY[t.severity]}`}>{t.severity}</span>
         <h3 className="text-base font-semibold text-slate-900">{t.title}</h3>
-        <span className={`ml-auto rounded px-1.5 py-0.5 text-[10px] font-medium ring-1 ${t.escalation === "ready"
-          ? "bg-emerald-50 text-emerald-700 ring-emerald-200" : "bg-amber-50 text-amber-800 ring-amber-200"}`}>
-          {t.escalation === "ready" ? "READY TO RAISE" : "DRAFT · AWAITING REVIEW"}
+        <span className={`ml-auto rounded px-1.5 py-0.5 text-[10px] font-medium ring-1 ${t.escalation === "draft"
+          ? "bg-amber-50 text-amber-800 ring-amber-200" : "bg-emerald-50 text-emerald-700 ring-emerald-200"}`}>
+          {t.escalation === "ready" ? "READY TO RAISE" : t.escalation === "draft" ? "DRAFT · AWAITING REVIEW" : "RESOLVED · RETEST PASSED"}
         </span>
       </div>
       <p className="mt-3 text-sm leading-relaxed text-slate-800">{t.business_impact}</p>
@@ -71,6 +71,17 @@ function TicketView({ t }: { t: Ticket }) {
         </Field>
         <Field label="Suggested fix">{t.fix}</Field>
         <Field label="Review">{t.review}</Field>
+        {t.retests.length > 0 && (
+          <Field label="Retest history">
+            {t.retests.map((h, i) => (
+              <div key={i} className="text-xs">
+                <span className="text-slate-400">{formatDateTime(h.at)} · {h.triggered_by} · </span>
+                <span className={`font-medium ${h.result === "fixed" ? "text-emerald-700" : h.result === "still_vulnerable" || h.result === "still_present" ? "text-red-700" : "text-amber-800"}`}>
+                  {h.result.replace(/_/g, " ")}</span>: {h.reason}
+              </div>
+            ))}
+          </Field>
+        )}
         {t.first_seen_scan_id != null && <Field label="First seen">scan {t.first_seen_scan_id}</Field>}
       </dl>
     </article>
@@ -116,8 +127,9 @@ function ReportPage() {
           <span className="text-slate-400"> · whole scan {seconds(r.scan.duration_s)}</span>
         </Field>
         <Field label="Findings">
-          {s.tickets} · {Object.entries(s.by_severity).filter(([, n]) => n).map(([k, n]) => `${n} ${k}`).join(", ") || "none"}
+          {s.open} open · {Object.entries(s.by_severity).filter(([, n]) => n).map(([k, n]) => `${n} ${k}`).join(", ") || "none"}
           <span className="text-slate-400"> · </span>{s.ready} ready to raise · {s.draft} waiting for human review
+          <span className="text-slate-400"> · </span><span className={s.fixed ? "text-emerald-700" : ""}>{s.fixed} fixed</span>
         </Field>
         <Field label="Noise removed">
           {s.merged_duplicates} duplicate(s) merged · {s.false_positives} false positive(s) rejected · {s.unverified} unverified
@@ -134,8 +146,12 @@ function ReportPage() {
       )}
 
       <H2>Findings</H2>
-      {r.tickets.length === 0 ? <p className="text-sm text-slate-500">No verified findings in this scan.</p>
-        : r.tickets.map((t) => <TicketView key={t.key} t={t} />)}
+      {r.tickets.filter((t) => t.escalation !== "resolved").length === 0 ? <p className="text-sm text-slate-500">No open findings in this scan.</p>
+        : r.tickets.filter((t) => t.escalation !== "resolved").map((t) => <TicketView key={t.key} t={t} />)}
+      {r.tickets.some((t) => t.escalation === "resolved") && (<>
+        <H2>Resolved: fixed and retested</H2>
+        {r.tickets.filter((t) => t.escalation === "resolved").map((t) => <TicketView key={t.key} t={t} />)}
+      </>)}
 
       <H2>Zombie and shadow endpoints</H2>
       {r.inventory.length === 0 && <p className="text-sm text-slate-500">None found.</p>}

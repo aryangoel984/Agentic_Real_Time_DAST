@@ -8,6 +8,7 @@
 - POST /scans/{id}/kill : kill switch, halts every outgoing request for the scan
 - POST /scans/{id}/findings/{fid}/review : human review of a critical/high finding (confirm or change severity)
 - GET  /scans/{id}/report | report.md | tickets.json : the scan report (JSON, Markdown) and tracker-ready tickets
+- POST /scans/{id}/findings/{fid}/retest : re-run the proof after a fix (background); closes the finding if fixed
 
 This service is independent of the target platform. It has its own database
 and never imports the target's code or opens the target's database.
@@ -21,11 +22,12 @@ from sqlalchemy import func, select
 
 from . import gateway
 from .config import GATEWAY_MAX_RPS, STAGES
-from .db import (AgentLog, ApiEndpoint, AuditLog, DeploymentEvent, Evidence, ScanRun, ScanStage, SessionLocal,
-                 TestCase, Vulnerability, init_db, now)
+from .db import (AgentLog, ApiEndpoint, AuditLog, DeploymentEvent, Evidence, RetestHistory, ScanRun, ScanStage,
+                 SessionLocal, TestCase, Vulnerability, init_db, now)
 from .orchestrator.graph import run_scan
 from .reporting import build_report, max_per_second, tickets_export
 from .reporting.markdown import report_markdown
+from . import retest
 
 app = FastAPI(title="Agentic DAST Scanner", version="0.1.0")
 
@@ -96,7 +98,8 @@ def _run_dict(run: ScanRun, ev: DeploymentEvent | None, done: int):
             "created_at": _iso(run.created_at), "started_at": _iso(run.started_at),
             "finished_at": _iso(run.finished_at), "error": run.error,
             "paused_reason": run.paused_reason, "halted_by": run.halted_by, "halt_reason": run.halt_reason,
-            "stages_done": done, "stages_total": len(STAGES), "trigger": _event_dict(ev)}
+            "stages_done": done, "stages_total": len(STAGES), "trigger": _event_dict(ev),
+            "retest_running": run.id in retest.RUNNING_SCANS}
 
 
 @app.get("/scans")
@@ -126,6 +129,10 @@ def get_scan(scan_id: int):
         vulns = db.scalars(select(Vulnerability).where(Vulnerability.scan_id == scan_id)
                            .order_by(Vulnerability.id)).all()
         tests = db.scalars(select(TestCase).where(TestCase.scan_id == scan_id).order_by(TestCase.id)).all()
+        history: dict[int, list] = {}
+        for h in db.scalars(select(RetestHistory).where(RetestHistory.vulnerability_id.in_([v.id for v in vulns] or [0]))
+                            .order_by(RetestHistory.id.desc())):
+            history.setdefault(h.vulnerability_id, []).append(h)
         evidence: dict[int, list] = {}
         vuln_evidence: dict[int, list] = {}
         if tests:
@@ -175,6 +182,13 @@ def get_scan(scan_id: int):
                           "owner": v.owner, "owner_source": v.owner_source,
                           "first_seen_scan_id": v.first_seen_scan_id, "review_status": v.review_status,
                           "review_note": v.review_note, "reviewed_at": _iso(v.reviewed_at),
+                          "retest_status": v.retest_status, "last_retested_at": _iso(v.last_retested_at),
+                          "fixed_at": _iso(v.fixed_at), "retest_running": v.id in retest.RUNNING,
+                          "retests": [{"at": _iso(h.ran_at), "result": h.result, "reason": h.notes,
+                                       "triggered_by": h.triggered_by, "scan_id": h.scan_id,
+                                       "checks": json.loads(h.checks_json) if h.checks_json else [],
+                                       "evidence": json.loads(h.evidence_json) if h.evidence_json else []}
+                                      for h in history.get(v.id, [])],
                           "checks": json.loads(v.checks_json) if v.checks_json else [],
                           "evidence": [{"request": json.loads(x.request_json) if x.request_json else None,
                                         "response": json.loads(x.response_json) if x.response_json else None,
@@ -319,13 +333,29 @@ def get_tickets(scan_id: int):
                         headers={"Content-Disposition": f'attachment; filename="dast-scan-{scan_id}-tickets.json"'})
 
 
+# ---------------- retest (Phase 10) ----------------
+
+@app.post("/scans/{scan_id}/findings/{finding_id}/retest", status_code=202)
+def retest_finding(scan_id: int, finding_id: int, background: BackgroundTasks):
+    with SessionLocal() as db:
+        v = db.get(Vulnerability, finding_id)
+        if v is None or v.scan_id != scan_id:
+            raise HTTPException(status_code=404, detail="Finding not found in this scan")
+        why = retest.can_retest(scan_id, v)
+    if why:
+        raise HTTPException(status_code=409, detail=why)
+    retest.RUNNING.add(finding_id)        # shown as running straight away; the job keeps it until done
+    background.add_task(retest.manual_retest, scan_id, finding_id)
+    return {"id": finding_id, "retest": "started"}
+
+
 @app.post("/scans/{scan_id}/kill")
 def kill_scan(scan_id: int):
     with SessionLocal() as db:
         run = db.get(ScanRun, scan_id)
         if run is None:
             raise HTTPException(status_code=404, detail="Scan not found")
-        if run.status not in ("queued", "running"):
+        if run.status not in ("queued", "running") and scan_id not in retest.RUNNING_SCANS:
             raise HTTPException(status_code=409, detail=f"Scan is {run.status}; nothing to stop")
     gateway.halt(scan_id, "human", "kill switch pressed on the dashboard")
     return {"scan_id": scan_id, "halted": True}

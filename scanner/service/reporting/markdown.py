@@ -12,7 +12,8 @@ def ticket_markdown(t: dict) -> str:
     owner = f"{t['owner'] or 'unknown'}{' (guessed)' if t['owner_source'] == 'guessed' else ''}"
     lines = [
         f"**Severity:** {t['severity']} ({t['priority']}) · **Owner:** {owner} · **Status:** "
-        + ("Ready to raise" if t["escalation"] == "ready" else "Draft, waiting for human review"),
+        + {"ready": "Ready to raise", "draft": "Draft, waiting for human review",
+           "resolved": f"Resolved: fixed, retest passed ({t['fixed_at']})"}[t["escalation"]],
         "",
         f"**Business impact.** {t['business_impact']}",
         "",
@@ -34,6 +35,9 @@ def ticket_markdown(t: dict) -> str:
     ]
     if t["review"]:
         lines += ["", f"**Review.** {t['review']}"]
+    if t["retests"]:
+        lines += ["", "**Retest history**",
+                  *[f"- {h['at']} ({h['triggered_by']}): {h['result'].replace('_', ' ')}: {h['reason']}" for h in t["retests"]]]
     if t["first_seen_scan_id"] is not None:
         lines += [f"**First seen:** scan {t['first_seen_scan_id']}"]
     return "\n".join(lines)
@@ -50,9 +54,9 @@ def report_markdown(r: dict) -> str:
         f"- **What changed:** {change} (received {trig['received_at']})",
         f"- **Time from the change to the first verified finding:** {_dur(sp['change_to_first_verified_s'])}"
         f" · whole scan {_dur(r['scan']['duration_s'])} · status {r['scan']['status']}",
-        f"- **Findings:** {s['tickets']} ("
-        + ", ".join(f"{n} {k}" for k, n in s["by_severity"].items() if n) + ")"
-        + f" · {s['ready']} ready to raise · {s['draft']} waiting for human review",
+        f"- **Findings:** {s['open']} open ("
+        + (", ".join(f"{n} {k}" for k, n in s["by_severity"].items() if n) or "none") + ")"
+        + f" · {s['ready']} ready to raise · {s['draft']} waiting for human review · {s['fixed']} fixed",
         f"- **Noise removed:** {s['merged_duplicates']} duplicate(s) merged · {s['false_positives']} false positive(s) "
         f"rejected · {s['unverified']} unverified",
         f"- **API inventory:** {s['endpoints']} endpoints ("
@@ -63,10 +67,16 @@ def report_markdown(r: dict) -> str:
         out += ["**Top risks**", "", *[f"1. {x}" for x in s["top_risks"]], ""]
 
     out += ["## Findings", ""]
-    if not r["tickets"]:
-        out += ["No verified findings in this scan.", ""]
-    for t in r["tickets"]:
+    open_t = [t for t in r["tickets"] if t["escalation"] != "resolved"]
+    done_t = [t for t in r["tickets"] if t["escalation"] == "resolved"]
+    if not open_t:
+        out += ["No open findings in this scan.", ""]
+    for t in open_t:
         out += [f"### {t['key']} · {t['title']}", "", ticket_markdown(t), ""]
+    if done_t:
+        out += ["## Resolved (fixed and retested)", ""]
+        for t in done_t:
+            out += [f"### {t['key']} · {t['title']}", "", ticket_markdown(t), ""]
 
     out += ["## Zombie and shadow endpoints", ""]
     if not r["inventory"]:
