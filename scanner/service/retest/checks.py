@@ -63,7 +63,10 @@ def rightful_use(ctx: Ctx, tag, tt: str, ep: dict, pr: PlaceResult, attack_ev) -
             return True, f"{detail}: the old route is retired for everyone (the recommended fix)"
         return ok, detail
     if tt == "cross_agency_access" and m == "GET":
-        return _own_record(ctx, tag, ep, pr)
+        ok, detail = _own_record(ctx, tag, ep, pr)
+        if not ok and ep.get("classification") == "zombie" and pr.evidence[-1][0].status in RETIRED:
+            return True, f"{detail}: the old route is retired for everyone (the recommended fix)"
+        return ok, detail
     if tt == "missing_auth":
         path = ep["path"] if "{" not in ep["path"] else _fill(ep["path"], ctx.new_booking(tag, v))
         ex = ctx.call(tag, m, path, who=v, body=ctx.body_for(ep) if m == "POST" else None)

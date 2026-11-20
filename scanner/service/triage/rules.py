@@ -117,6 +117,6 @@ def impact(test_type: str, method: str, path: str, checks: list[dict], also: lis
     else:
         line = f"Verified flaw on {method} {path}."
     if also:
-        where = ", ".join(f"{m} {p} ({c})" for m, p, c in also)
+        where = ", ".join(f"{m} {p} ({c})" for m, p, c in dict.fromkeys(also))  # one mention per place
         line += f" The same flaw is also reachable through {where}."
     return line + _proof(checks)
