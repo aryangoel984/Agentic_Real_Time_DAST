@@ -159,10 +159,12 @@ class Vulnerability(Base):
     vuln_class: Mapped[str | None] = mapped_column(String(50), nullable=True)
     severity: Mapped[str | None] = mapped_column(String(20), nullable=True)        # critical/high/medium/low
     business_impact: Mapped[str | None] = mapped_column(Text, nullable=True)
-    status: Mapped[str] = mapped_column(String(20), default="suspected")           # suspected/verified/false_positive/fixed
+    status: Mapped[str] = mapped_column(String(20), default="suspected")           # verified/false_positive/unverified/fixed
     owner: Mapped[str | None] = mapped_column(String(100), nullable=True)
     suggested_fix: Mapped[str | None] = mapped_column(Text, nullable=True)
     dedupe_key: Mapped[str | None] = mapped_column(String(200), nullable=True, index=True)
+    verification_reason: Mapped[str | None] = mapped_column(Text, nullable=True)   # why verified / rejected (Phase 7)
+    checks_json: Mapped[str | None] = mapped_column(Text, nullable=True)           # [{name, passed, detail}]
     first_seen_at: Mapped[datetime] = mapped_column(DateTime, default=now)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 

@@ -1,7 +1,7 @@
 import { duration, formatDateTime, ScanDetail as Detail } from "../lib/api";
 import AgentLog from "./AgentLog";
 import AttackPlan, { PlanHeader } from "./AttackPlan";
-import FindingsPanel from "./FindingsPanel";
+import FindingsPanel, { FindingsHeader } from "./FindingsPanel";
 import InventoryTable, { CLASS_STYLES } from "./InventoryTable";
 import ExecutionPanel, { ExecutionHeader } from "./ExecutionPanel";
 import SafetyPanel from "./SafetyPanel";
@@ -22,6 +22,7 @@ export default function ScanDetail({ scan }: { scan: Detail }) {
   const recon = scan.stages.find((s) => s.stage === "recon");
   const planning = scan.stages.find((s) => s.stage === "attack_planning");
   const execution = scan.stages.find((s) => s.stage === "execution");
+  const verificationStage = scan.stages.find((s) => s.stage === "verification");
   const plan = scan.state?.plan;
   const tests = scan.test_cases ?? [];
   const endpoints = scan.endpoints ?? [];
@@ -103,6 +104,17 @@ export default function ScanDetail({ scan }: { scan: Detail }) {
         <ExecutionPanel scan={scan} stageStatus={execution?.status} />
       </section>
 
+      <section className="card overflow-hidden">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 px-5 py-3">
+          <div>
+            <h3 className="card-title">Findings</h3>
+            <p className="mt-0.5 text-xs text-slate-400">Each suspicious result re-proved on fresh data plus an independent check. Severity is assigned in triage.</p>
+          </div>
+          <FindingsHeader findings={scan.findings} />
+        </div>
+        <FindingsPanel scan={scan} stageStatus={verificationStage?.status} />
+      </section>
+
       <div className="grid gap-6 xl:grid-cols-[minmax(0,22rem)_minmax(0,1fr)]">
         <section className="card p-5">
           <h3 className="card-title mb-5">Pipeline</h3>
@@ -110,14 +122,6 @@ export default function ScanDetail({ scan }: { scan: Detail }) {
         </section>
 
         <div className="space-y-6">
-          <section className="card overflow-hidden">
-            <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3">
-              <h3 className="card-title">Findings</h3>
-              <span className="text-xs text-slate-400">{scan.findings.length}</span>
-            </div>
-            <FindingsPanel findings={scan.findings} />
-          </section>
-
           <section className="card overflow-hidden">
             <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3">
               <h3 className="card-title">Agent log</h3>

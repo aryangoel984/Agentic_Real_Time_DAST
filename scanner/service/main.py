@@ -118,13 +118,18 @@ def get_scan(scan_id: int):
                             .order_by(ScanStage.position)).all()
         logs = db.scalars(select(AgentLog).where(AgentLog.scan_id == scan_id)
                           .order_by(AgentLog.id)).all()
-        vulns = db.scalars(select(Vulnerability).where(Vulnerability.scan_id == scan_id)).all()
+        vulns = db.scalars(select(Vulnerability).where(Vulnerability.scan_id == scan_id)
+                           .order_by(Vulnerability.id)).all()
         tests = db.scalars(select(TestCase).where(TestCase.scan_id == scan_id).order_by(TestCase.id)).all()
         evidence: dict[int, list] = {}
+        vuln_evidence: dict[int, list] = {}
         if tests:
             for item in db.scalars(select(Evidence).where(Evidence.test_case_id.in_([t.id for t in tests]))
                                    .order_by(Evidence.id)):
-                evidence.setdefault(item.test_case_id, []).append(item)
+                if item.vulnerability_id is None:      # execution evidence
+                    evidence.setdefault(item.test_case_id, []).append(item)
+                else:                                  # verification evidence
+                    vuln_evidence.setdefault(item.vulnerability_id, []).append(item)
         endpoints = db.scalars(select(ApiEndpoint).where(ApiEndpoint.scan_id == scan_id)
                                .order_by(ApiEndpoint.path, ApiEndpoint.method)).all()
         done = sum(1 for s in stages if s.status == "done")
@@ -157,7 +162,13 @@ def get_scan(scan_id: int):
                                           "response": json.loads(x.response_json) if x.response_json else None,
                                           "note": x.notes} for x in evidence.get(t.id, [])]}
                            for t in tests],
-            "findings": [{"id": v.id, "title": v.title, "severity": v.severity, "status": v.status}
+            "findings": [{"id": v.id, "title": v.title, "severity": v.severity, "status": v.status,
+                          "test_case_id": v.test_case_id, "endpoint_id": v.endpoint_id, "vuln_class": v.vuln_class,
+                          "verification_reason": v.verification_reason,
+                          "checks": json.loads(v.checks_json) if v.checks_json else [],
+                          "evidence": [{"request": json.loads(x.request_json) if x.request_json else None,
+                                        "response": json.loads(x.response_json) if x.response_json else None,
+                                        "note": x.notes} for x in vuln_evidence.get(v.id, [])]}
                          for v in vulns],
         }
 

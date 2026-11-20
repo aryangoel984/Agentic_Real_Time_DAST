@@ -836,3 +836,115 @@ The 5 suspicious results are exactly the 5 planted bugs. The 6 clean ones are tr
 6. Click any row to see its evidence.
 7. Deny a money test in a second scan to see it skipped.
 8. Run `python seed.py` afterwards to remove the synthetic bookings.
+
+## Phase 7 — Verification (prove it before it counts)
+
+### What it is and why
+
+Execution (Phase 6) marks a test **suspicious** from a single response, and one response can mislead. It might be a one-off glitch, a page that answers "200" to anything, or a "paid" message where nothing was actually paid. Precision is 20% of the judging, so this stage tries hard to **disprove** every suspicious result before it is reported.
+
+A result becomes a **verified finding** only if it survives. Anything that doesn't is recorded as a **false positive**, with the exact reason.
+
+Clean results are not re-run. They stay as the true negatives.
+
+### The two checks every suspicious result must pass
+
+1. **Repeat on fresh data.** The same attack is run again on a **new** synthetic booking, and it must give the same suspicious answer. This rules out glitches, caching and leftovers from earlier tests.
+2. **An independent control check.** This is a different kind of proof that the effect is real:
+
+| Test | Control check | Passes only if |
+|---|---|---|
+| Cross-agency read, old v1 version | The booking's **owner** reads the same booking, and B-admin also asks for an ID that **doesn't exist** | what B-admin got is identical to the owner's copy (id, agency, customer, amount) **and** the made-up ID is refused, so the endpoint isn't simply answering 200 to everything |
+| Missing authentication | the same request **with** a valid login | the no-login answer has the same real fields as the logged-in one, not a placeholder or error message |
+| Duplicate refund | the owner **reads the booking back** | the booking itself shows more refunded than paid |
+| Price tampering | the owner reads the booking back | the booking shows "paid" with ₹1 against a ₹25,000 price |
+| Cross-agency payment or booking creation, sub-agent refund, over-refund (if ever suspicious) | the owner reads the booking back | the change really happened |
+
+**How the result is decided:**
+- Both checks pass → **verified**.
+- A check contradicts the raw result → **false positive**, with that check's detail as the reason.
+- A check can't be carried out (for example the read-back failed) → **unverified**. It is left for a human and never quietly promoted.
+
+All verification requests go through the safety gateway. They are tagged with the same test, so the earlier human approval and every gateway rule still apply, and they appear in the audit log under stage **verification**. They use fresh synthetic bookings, which `python seed.py` removes.
+
+### What is stored
+
+- **One `vulnerabilities` row per suspicious test.** It holds a plain title, the class, the endpoint, the test, and the status (`verified` / `false_positive` / `unverified`). It also stores the reason and each check with a pass or fail mark and one line of detail.
+- **Verification evidence:** the repeat and control exchanges. These follow the same rule as before: the request is masked and only the key response fields are kept.
+- **Severity, owner and duplicate-merging are left empty** for triage (Phase 8).
+
+### Dashboard
+
+**The Findings card** is now a full-width card under Execution. It shows:
+- a top line: "5 verified · 0 false positives · 0 unverified"
+- for each finding:
+  - its title and status (verified in red, false positive in grey, unverified in amber)
+  - each check, with ✓ or ✗ and its detail
+  - "severity: set in triage"
+  - expandable masked evidence
+
+**In the Execution card,** each suspicious row now also carries its verification tag.
+
+### Proving that false positives are rejected
+
+On the practice target, all 5 suspicious results are genuinely real, so a live scan verifies all 5 and rejects none. To show that the rejection logic works, `scanner/scripts/check_verification.py` runs the real verification stage against a small fake platform held in memory, with nothing sent anywhere:
+
+| Scenario | Result | Why |
+|---|---|---|
+| Truly vulnerable: cross-agency read, double refund, shadow missing auth | **verified** (3/3) | every check passes |
+| Leaks once, then refuses on the repeat | **false positive** | repeat refused (404) |
+| Answers 200 for every ID, even made-up ones | **false positive** | the made-up ID returned 200 |
+| No-login answer is only a placeholder | **false positive** | its fields differ from the real data |
+| Payment says "paid" but nothing changed | **false positive** | read-back shows unpaid, ₹0 paid |
+
+All 7 scenarios behaved as expected.
+
+### How it was tested live
+
+A full scan used the rule-based plan with all money tests approved:
+- **Execution:** 5 suspicious, 6 clean.
+- **Verification: 5 verified, 0 false positives, 0 unverified.** Both checks passed on each:
+
+| Finding | Check 1 | Check 2 |
+|---|---|---|
+| Cross-agency read | B-admin got fresh booking #1020 | identical to the owner's copy; made-up ID gave 404 |
+| Price tampering | ₹1 payment accepted again | read-back: paid, ₹1 of ₹25,000 |
+| Double refund | second refund accepted again | read-back: ₹50,000 refunded against ₹25,000 paid |
+| Zombie v1 | leaked fresh booking #1023 | matches the owner's copy; made-up ID gave 404 |
+| Shadow partner-details | no-login 200 again | same fields as the logged-in answer |
+
+- **No severity was set** on any finding.
+- **All 22 verification requests went through the gateway**, none were blocked, and no password or token appears in the audit log. The highest rate was 5 in any second.
+- **Reset works.** The scan left 11 synthetic bookings. `seed.py` returned the target to 8 bookings with 0 synthetic.
+
+### Key decisions and why
+
+- **Two different kinds of proof.** Repeating alone wouldn't catch an endpoint that always says 200. A control check alone wouldn't catch a one-off glitch. Together they cover both.
+- **Read the booking back for money bugs.** A "200 OK" message is just text. Only the booking's own totals show whether money actually moved.
+- **"Unverified" is its own status.** A check that couldn't run is neither proof nor disproof, so a human decides.
+- **The fake platform is used only to demonstrate rejection.** The live target has no misleading cases, so rejection can only be shown on purpose-built ones.
+
+### Limitations
+
+- **One repeat, not many.** A bug that only shows up intermittently could still be rejected as a false positive.
+- **Comparisons use a fixed set of key fields.** These are id, agency, customer, amount and username. A different API would need its own list.
+- **Clean results are trusted as they are.** A false *negative* would not be caught here.
+- **Each verification adds synthetic bookings, payments and refunds to the target.** `seed.py` removes them.
+
+### How to run it
+
+1. Delete the scanner database once, because new columns were added:
+   ```bash
+   rm -f scanner/data/scanner.db scanner/data/scanner.db-wal scanner/data/scanner.db-shm
+   ```
+2. Reset the target:
+   ```bash
+   cd backend && python seed.py
+   ```
+3. Start everything as usual and fire a scan. Approve the money tests.
+4. Watch the **Findings** card fill in with 5 verified findings and their checks.
+5. Run the fake-platform check (no servers needed). It should end with "all scenarios behaved as expected":
+   ```bash
+   scanner/.venv/bin/python scanner/scripts/check_verification.py
+   ```
+6. Run `python seed.py` afterwards.

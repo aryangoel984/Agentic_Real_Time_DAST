@@ -37,7 +37,18 @@ export type Stage = {
 
 export type LogLine = { id: number; stage: string | null; level: string; message: string; created_at: string | null };
 
-export type Finding = { id: number; title: string; severity: string | null; status: string };
+export type Finding = {
+  id: number;
+  title: string;
+  severity: string | null;
+  status: "verified" | "false_positive" | "unverified" | string;
+  test_case_id: number | null;
+  endpoint_id: number | null;
+  vuln_class: string | null;
+  verification_reason: string | null;
+  checks: { name: string; passed: boolean | null; detail: string }[];
+  evidence: EvidenceItem[];
+};
 
 export type Endpoint = {
   id: number;

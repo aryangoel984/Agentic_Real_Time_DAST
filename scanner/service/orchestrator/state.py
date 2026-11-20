@@ -14,3 +14,4 @@ class ScanState(TypedDict, total=False):
     plan: dict                                         # attack planner summary: planner, model, counts, dropped, skips
     safety: dict                                       # safety gateway: {cleared, approved, denied} test counts
     execution: dict                                    # raw results: {suspicious, clean, skipped, could_not_run}
+    verification: dict                                 # {verified, false_positive, unverified}

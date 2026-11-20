@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { EvidenceItem, ScanDetail, TestCase } from "../lib/api";
+import { FINDING_STYLES } from "./FindingsPanel";
 
 const RESULT: Record<string, { label: string; chip: string }> = {
   suspicious: { label: "suspicious", chip: "bg-amber-50 text-amber-800 ring-amber-200" },
@@ -16,7 +17,7 @@ function outcome(t: TestCase): string {
   return t.raw_result ?? t.exec_status ?? "pending";
 }
 
-function Evidence({ items }: { items: EvidenceItem[] }) {
+export function Evidence({ items }: { items: EvidenceItem[] }) {
   return (
     <div className="mt-2 space-y-2">
       {items.map((e, i) => (
@@ -35,7 +36,7 @@ ${JSON.stringify(e.response?.key_fields, null, 1)}`}
   );
 }
 
-function Row({ t, endpoint }: { t: TestCase; endpoint: string }) {
+function Row({ t, endpoint, verdict }: { t: TestCase; endpoint: string; verdict?: string }) {
   const [open, setOpen] = useState(false);
   const o = outcome(t);
   const style = RESULT[o];
@@ -54,6 +55,11 @@ function Row({ t, endpoint }: { t: TestCase; endpoint: string }) {
             </span>
           ) : (
             <span className="text-[11px] text-slate-400">waiting</span>
+          )}
+          {verdict && (
+            <span className={`whitespace-nowrap rounded px-1.5 py-0.5 text-[10px] font-medium ring-1 ${FINDING_STYLES[verdict]?.chip ?? ""}`}>
+              {FINDING_STYLES[verdict]?.label ?? verdict}
+            </span>
           )}
           {t.evidence.length > 0 && <span className="text-[11px] text-slate-400">{open ? "▾" : "▸"} evidence</span>}
         </span>
@@ -95,7 +101,8 @@ export default function ExecutionPanel({ scan, stageStatus }: { scan: ScanDetail
   return (
     <div>
       <ul className="divide-y divide-slate-100">
-        {rows.map((t) => <Row key={t.id} t={t} endpoint={ep(t.endpoint_id)} />)}
+        {rows.map((t) => <Row key={t.id} t={t} endpoint={ep(t.endpoint_id)}
+          verdict={scan.findings.find((f) => f.test_case_id === t.id)?.status} />)}
       </ul>
       <p className="border-t border-slate-100 px-5 py-2.5 text-[11px] text-slate-400">
         Raw results compared against the synthetic bookings the scanner created. Not confirmed findings and no severity yet:
