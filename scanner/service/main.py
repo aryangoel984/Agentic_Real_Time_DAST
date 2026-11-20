@@ -7,6 +7,7 @@
 - POST /scans/{id}/tests/{tid}/approve | deny : human decision on a high-risk test
 - POST /scans/{id}/kill : kill switch, halts every outgoing request for the scan
 - POST /scans/{id}/findings/{fid}/review : human review of a critical/high finding (confirm or change severity)
+- GET  /scans/{id}/report | report.md | tickets.json : the scan report (JSON, Markdown) and tracker-ready tickets
 
 This service is independent of the target platform. It has its own database
 and never imports the target's code or opens the target's database.
@@ -14,6 +15,7 @@ and never imports the target's code or opens the target's database.
 import json
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 
@@ -22,6 +24,8 @@ from .config import GATEWAY_MAX_RPS, STAGES
 from .db import (AgentLog, ApiEndpoint, AuditLog, DeploymentEvent, Evidence, ScanRun, ScanStage, SessionLocal,
                  TestCase, Vulnerability, init_db, now)
 from .orchestrator.graph import run_scan
+from .reporting import build_report, max_per_second, tickets_export
+from .reporting.markdown import report_markdown
 
 app = FastAPI(title="Agentic DAST Scanner", version="0.1.0")
 
@@ -181,16 +185,6 @@ def get_scan(scan_id: int):
 
 # ---------------- safety gateway (Phase 5) ----------------
 
-def _max_per_second(times: list) -> int:
-    """Most requests sent inside any 1-second window [t, t+1)."""
-    best, j = 0, 0
-    for i in range(len(times)):
-        while (times[i] - times[j]).total_seconds() >= 1:
-            j += 1
-        best = max(best, i - j + 1)
-    return best
-
-
 @app.get("/scans/{scan_id}/audit")
 def get_audit(scan_id: int, limit: int = 400):
     with SessionLocal() as db:
@@ -206,7 +200,7 @@ def get_audit(scan_id: int, limit: int = 400):
         return {
             "summary": {"allowed": counts.get("allow", 0), "held": counts.get("hold", 0),
                         "blocked": counts.get("block", 0), "sent": len(sent_times),
-                        "rate_cap": GATEWAY_MAX_RPS, "max_per_second": _max_per_second(sent_times),
+                        "rate_cap": GATEWAY_MAX_RPS, "max_per_second": max_per_second(sent_times),
                         "paused_reason": run.paused_reason, "halted_by": run.halted_by,
                         "halt_reason": run.halt_reason, "status": run.status},
             "rows": [{"id": a.id, "at": _iso(a.sent_at), "stage": a.stage, "method": a.method, "url": a.url,
@@ -297,6 +291,32 @@ def review_finding(scan_id: int, finding_id: int, body: ReviewIn):
                         message=f"finding #{v.id} {v.title}: {what} by a human reviewer"))
         db.commit()
         return {"id": v.id, "severity": v.severity, "review_status": v.review_status}
+
+
+# ---------------- report (Phase 9) ----------------
+
+def _report_or_404(scan_id: int) -> dict:
+    r = build_report(scan_id)
+    if r is None:
+        raise HTTPException(status_code=404, detail="Scan not found")
+    return r
+
+
+@app.get("/scans/{scan_id}/report")
+def get_report(scan_id: int):
+    return _report_or_404(scan_id)
+
+
+@app.get("/scans/{scan_id}/report.md", response_class=PlainTextResponse)
+def get_report_md(scan_id: int):
+    return PlainTextResponse(report_markdown(_report_or_404(scan_id)), media_type="text/markdown; charset=utf-8",
+                             headers={"Content-Disposition": f'attachment; filename="dast-scan-{scan_id}-report.md"'})
+
+
+@app.get("/scans/{scan_id}/tickets.json")
+def get_tickets(scan_id: int):
+    return JSONResponse(tickets_export(_report_or_404(scan_id)),
+                        headers={"Content-Disposition": f'attachment; filename="dast-scan-{scan_id}-tickets.json"'})
 
 
 @app.post("/scans/{scan_id}/kill")

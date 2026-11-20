@@ -215,3 +215,81 @@ export function timeAgo(iso: string | null): string {
   if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
   return `${Math.floor(s / 86400)}d ago`;
 }
+
+// ---------------- report (Phase 9) ----------------
+
+export type Ticket = {
+  key: string;
+  rank: number;
+  finding_id: number;
+  title: string;
+  severity: string;
+  priority: string;
+  severity_reason: string | null;
+  owner: string | null;
+  owner_source: string | null;
+  first_seen_scan_id: number | null;
+  escalation: "ready" | "draft";
+  review: string;
+  vuln_class: string | null;
+  test_type: string;
+  business_impact: string;
+  affected: { method: string; path: string; classification: string | null }[];
+  steps: string[];
+  expected: string;
+  actual: string;
+  checks: { name: string; passed: boolean | null; detail: string }[];
+  evidence: EvidenceItem[];
+  fix: string;
+};
+
+export type InventoryRow = {
+  method: string;
+  path: string;
+  classification: string;
+  last_traffic_at: string | null;
+  hits_in_window: number | null;
+  callers: string[];
+  reachable_without_login: "yes" | "no" | "unknown";
+  reachable_basis: string;
+  data_exposed: string[];
+  compared_with_current: string;
+  vulnerabilities: string[];
+  owner: string | null;
+  recommendation: string | null;
+};
+
+export type Report = {
+  scan: { id: number; status: string; started_at: string | null; finished_at: string | null; duration_s: number | null };
+  trigger: { event: string | null; method: string | null; endpoint: string | null; version: string | null; received_at: string | null };
+  speed: { first_verified_at: string | null; change_to_first_verified_s: number | null };
+  summary: {
+    tickets: number; by_severity: Record<string, number>; ready: number; draft: number;
+    merged_duplicates: number; false_positives: number; unverified: number; endpoints: number;
+    inventory: Record<string, number>; top_risks: string[];
+  };
+  tickets: Ticket[];
+  inventory: InventoryRow[];
+  coverage: {
+    clean: { test: string; endpoint: string; result: string | null }[];
+    false_positives: { title: string; reason: string | null }[];
+    unverified: { title: string; reason: string | null }[];
+    not_run: { test: string; endpoint: string; result: string | null }[];
+  };
+  safety: {
+    sent: number; blocked: number; held_for_approval: number; held_by_health_monitor: number;
+    rate_cap: number; max_per_second: number; by_stage: Record<string, number>;
+    blocked_reasons: { reason: string; count: number }[];
+    self_test_blocked: number; self_test_reasons: { reason: string; count: number }[];
+    human_decisions: { at: string | null; stage: string | null; decision: string }[];
+    halted_by: string | null; halt_reason: string | null;
+  };
+};
+
+export const REPORT_BASE = BASE;
+
+export function seconds(s: number | null): string {
+  if (s == null) return "—";
+  const m = Math.floor(s / 60), r = Math.round(s % 60);
+  return m ? `${m}m ${String(r).padStart(2, "0")}s` : `${r}s`;
+}

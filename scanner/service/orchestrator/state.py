@@ -16,3 +16,4 @@ class ScanState(TypedDict, total=False):
     execution: dict                                    # raw results: {suspicious, clean, skipped, could_not_run}
     verification: dict                                 # {verified, false_positive, unverified}
     triage: dict                                       # {findings, merged, critical, high, medium, low, awaiting_review}
+    report: dict                                       # {tickets, ready, draft}

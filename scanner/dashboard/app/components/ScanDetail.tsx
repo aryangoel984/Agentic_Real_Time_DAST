@@ -4,6 +4,7 @@ import AttackPlan, { PlanHeader } from "./AttackPlan";
 import FindingsPanel, { FindingsHeader } from "./FindingsPanel";
 import InventoryTable, { CLASS_STYLES } from "./InventoryTable";
 import ExecutionPanel, { ExecutionHeader } from "./ExecutionPanel";
+import ReportCard from "./ReportCard";
 import SafetyPanel from "./SafetyPanel";
 import StageTimeline from "./StageTimeline";
 import StatusPill from "./StatusPill";
@@ -23,6 +24,7 @@ export default function ScanDetail({ scan }: { scan: Detail }) {
   const planning = scan.stages.find((s) => s.stage === "attack_planning");
   const execution = scan.stages.find((s) => s.stage === "execution");
   const verificationStage = scan.stages.find((s) => s.stage === "verification");
+  const reportingStage = scan.stages.find((s) => s.stage === "reporting");
   const plan = scan.state?.plan;
   const tests = scan.test_cases ?? [];
   const endpoints = scan.endpoints ?? [];
@@ -113,6 +115,14 @@ export default function ScanDetail({ scan }: { scan: Detail }) {
           <FindingsHeader findings={scan.findings} />
         </div>
         <FindingsPanel scan={scan} stageStatus={verificationStage?.status} />
+      </section>
+
+      <section className="card overflow-hidden">
+        <div className="border-b border-slate-200 px-5 py-3">
+          <h3 className="card-title">Report</h3>
+          <p className="mt-0.5 text-xs text-slate-400">One ticket per finding with impact, steps to reproduce, evidence and a suggested fix, plus the zombie/shadow endpoints and the safety record. Rebuilt on every open, so reviews show up straight away.</p>
+        </div>
+        <ReportCard scan={scan} stageStatus={reportingStage?.status} />
       </section>
 
       <div className="grid gap-6 xl:grid-cols-[minmax(0,22rem)_minmax(0,1fr)]">

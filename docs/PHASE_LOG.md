@@ -1054,3 +1054,111 @@ The **Findings** card is now a ranked list.
    ```bash
    scanner/.venv/bin/python scanner/scripts/check_triage.py
    ```
+
+## Phase 9 — Reporting (one document a team can act on)
+
+### What it is and why
+
+The brief describes this stage as "raises a ticket with evidence, impact, severity, owner and a suggested fix". It also asks the report to say, for each zombie or shadow endpoint:
+- when it last saw real traffic
+- whether it is reachable without a login
+- what data it exposes
+- which vulnerabilities it has compared with the current version
+- the likely owner
+- a recommendation
+
+Report quality is 10% of the judging, and the report is what a reviewer reads first. Until now all of this was spread across six dashboard cards. Phase 9 gathers it into one document.
+
+Reporting reads only the scanner's own database. **It sends nothing to the target**, and it needs no new database columns.
+
+### What the report contains
+
+1. **Summary**
+   - what changed and when
+   - **time from the change to the first verified finding** (the brief's speed measure); on the practice target this was 51 s
+   - finding counts by severity
+   - how many tickets are ready or still drafts
+   - noise removed (duplicates merged, false positives rejected)
+   - the inventory counts
+   - the top three risks in one line each
+2. **One ticket per ranked finding.** Each has a key (`DAST-<scan>-<rank>`) and contains:
+   - severity with its reason, owner and business impact
+   - affected endpoints, including any merged zombie copy
+   - **steps to reproduce**: a setup sentence, then each verification request as the test account that sent it and what came back (tokens masked)
+   - expected vs actual result
+   - the checks that proved it
+   - a **suggested fix**: fixed text for each test type, written for this platform
+   - its **escalation status**. An unreviewed critical or high ticket is a **draft** and is not escalated. It becomes **Ready to raise** once a human confirms or changes it. Medium and low tickets are ready straight away.
+3. **Zombie and shadow endpoints**, with all six items the brief lists. "Compared with the current version" finds the current route with the same path minus its version prefix and compares their verified flaws. For example, the v1 booking route has the same flaw as the current one, so fixing one doesn't fix the other.
+4. **Tested and found clean**: every clean test, the false positives rejected with their reasons, and anything not proven or not run.
+5. **Safety record**:
+   - requests sent, split by stage
+   - peak rate against the cap
+   - real blocks, kept apart from the gateway's 5 self-test blocks
+   - requests held for approval or while the target struggled
+   - whether the scan was stopped early
+   - every human decision (test approvals, finding reviews)
+
+### How you get it
+
+- **Report card** (below Findings) shows the speed figure, the ticket counts and three buttons:
+  - **Open report**: a clean printable page; use the browser's Print → Save as PDF
+  - **Download Markdown**: `dast-scan-N-report.md`
+  - **Download tickets (JSON)**: one entry per ticket with summary, priority (critical = Highest), component (owner), labels, status and a Markdown description, in the shape issue trackers such as Jira import
+- **The report is built from the database on every request.** A review on the dashboard shows up at once in the card, the page and both files.
+- **The pipeline's reporting stage** builds the report once to check it and logs a summary line and the speed figure.
+
+API: `GET /scans/{id}/report` (JSON), `/report.md` and `/tickets.json`.
+
+### How it was tested
+
+**`scanner/scripts/check_report.py`** builds a scan's records in a scratch database (endpoints, tests, verified findings with masked evidence, audit rows) and runs the real triage and report code. No servers are needed. **22/22 checks passed**, covering:
+- every summary field, including the speed figure
+- ticket keys and order
+- every required ticket field
+- the merged zombie copy and the steps to reproduce
+- drafts for unreviewed findings
+- all six zombie/shadow items
+- clean tests and false positives
+- safety counts matching the audit log, with self-test blocks kept apart
+- both downloads
+- **no password or unmasked token anywhere**
+- Draft → Ready after a review
+- building the report adds no audit rows
+
+The earlier checks still pass: gateway 23/23, verification 7/7, triage 28/28.
+
+**Live scan** (rule-based plan, money tests approved):
+- 4 tickets (2 critical, 2 high), all drafts
+- **51 s from the change to the first verified finding**
+- the safety record shows 167 sent (recon 108, execution 37, verification 22) at a peak of 5/s, matching the audit log; 0 real blocks, 5 self-test blocks, 3 held for approval
+- triage and reporting sent 0 requests
+- **Confirming DAST-1-01** on the dashboard moved it to Ready on the card, the page, the Markdown and the JSON
+- No test password or unmasked token appears in either download
+- The printable page showed every section with no browser errors
+- The target was reseeded afterwards
+
+### Key decisions and why
+
+- **Built on demand, not stored.** The report always matches the latest reviews, and there is no copy that can go stale.
+- **Steps to reproduce come from the verification evidence.** They show the requests that actually proved the flaw, already masked, instead of a description of what should happen.
+- **Unreviewed serious findings stay drafts.** The brief puts a human between a high-severity finding and escalation.
+- **Self-test blocks are reported separately.** They are the gateway proving itself, not the scanner misbehaving.
+
+### Limitations
+
+- **Suggested fixes are fixed text for each test type.** They are specific to this kind of platform but not to the target's code.
+- **Tickets are exported, not pushed.** There is no live Jira connection; the JSON is ready to import.
+- **The speed figure is measured from when the scanner received the change event,** not from the deploy itself.
+
+### How to run it
+
+1. No database reset is needed this time.
+2. Restart the scanner so it picks up the new code, then run a scan and approve the money tests.
+3. When the scan finishes, the **Report** card shows the speed and the ticket counts.
+4. Click **Open report**. Confirm one finding on the dashboard and refresh the report: its ticket changes to Ready to raise.
+5. Run the check (no servers needed). It should end with 22/22:
+   ```bash
+   scanner/.venv/bin/python scanner/scripts/check_report.py
+   ```
+6. Run `python seed.py` afterwards.
